@@ -87,6 +87,27 @@ Because a zombie can never be the target, **OpenZombr only ever signals parents*
 * Writes a CSV evidence log to `~/Library/Application Support/OpenZombr/` — this is the
   material for an upstream bug report against `agency`.
 
+### The evidence log, and one known anomaly in the archive
+
+Rows are appended to `zombie-evidence.csv`. The header is written when the file is
+created, so if a later version adds a column the log is rotated aside to
+`zombie-evidence.N.csv` and a fresh one started, rather than continuing to append wider
+rows under a narrower header.
+
+That check was added one row too late. **`zombie-evidence.1.csv` contains 86 rows of 13
+fields under its matching 13-column header, and one final row of 14 fields** — written by
+the build that had the new `session_signal` column but not yet the rotation check:
+
+```
+2026-08-28T18:09:53Z,801,239,4000,20.0,3199,0.00,,86183,agency,115,cpu_idle=unknown;log_age=8,poll,
+```
+
+A strict CSV reader will reject or misparse that last line. It is left in place
+deliberately. This file exists to be evidence for a bug report, and an evidence file that
+has been edited after the fact is worth less than one with a disclosed anomaly — so the
+anomaly is disclosed here instead of being quietly repaired. Drop the final line when
+parsing that particular archive; every file written since is internally consistent.
+
 ### Safety rules for the killer
 
 These are the rules that matter most, and each one is covered by a unit test:
