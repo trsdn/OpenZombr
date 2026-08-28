@@ -230,6 +230,32 @@ beforehand, so a session resuming after three hours would take hours to be recog
 working again. A slow trickle cannot creep past the threshold either, because a trickle's
 per-poll rate is below it by definition.
 
+#### Beobachtet auf der betroffenen Maschine
+
+`OpenZombr --idle-watch <Dauer> <Schwelle>` polls repeatedly and prints the
+classification without signalling anything. It exists because the override cannot be
+observed any other way: `--probe` takes a single reading and idleness needs at least two,
+while the menu bar app has the history but no textual output. A short threshold shows the
+behaviour without waiting out the two hour default.
+
+Run over 5 minutes with a deliberately reckless 2 minute threshold:
+
+```
+pid 86183 agency — 74 Zombies, Sitzung 86242, idle unter 1 Min. → AKTIV (geschützt)
+pid 17831 agency — 36 Zombies, Sitzung 17890, idle unter 1 Min. → AKTIV (geschützt)
+pid  1332 agency — 71 Zombies, Sitzung  1394, idle 5 Min.       → INAKTIV (freigegeben)
+```
+
+Two wrappers whose sessions were working stayed protected throughout, one of them
+(17831) oscillating in and out as its session did sporadic work — which is exactly the
+required behaviour. The third, 1332, was **the user's own live session**, idle only
+because they were between turns, and a two minute threshold released it. Nothing was
+killed: 1332 sits far below the 100 zombie threshold.
+
+That is the whole argument for the two hour default in one run. The signal discriminates
+correctly, but only a window measured in hours separates "session finished" from "user is
+thinking".
+
 ### Killing a wrapper is survivable — but that is not the safety argument
 
 Empirically verified during the incident: when an `agency` wrapper is SIGKILLed, its live
