@@ -95,6 +95,16 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
     /// short-lived self-spawns, i.e. it is plausibly hosting real work.
     public var hasActiveSession: Bool { sessionChildCount > 0 }
 
+    /// True when the parent has a session but at least one of the two idle signals could
+    /// not be read.
+    ///
+    /// This is a degraded state, not a verdict: the parent is protected either way, but
+    /// "protected because both signals say the session is alive" and "protected because
+    /// the app cannot see" are very different situations and are reported separately.
+    public var hasUnreadableSessionSignal: Bool {
+        hasActiveSession && (sessionIdleSeconds == nil || sessionLogAgeSeconds == nil)
+    }
+
     /// Whether the session should be treated as live, given how long a child must be
     /// idle before it stops counting.
     ///

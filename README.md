@@ -205,6 +205,32 @@ Two deliberate conservative choices:
 * **One unreadable child protects the parent.** A wrapper counts as idle only when *every*
   session child is known to be idle.
 
+### Why two signals and not one: delegated work
+
+**Do not remove the log signal as redundant.** It exists because of a specific measured
+failure, and without that evidence in front of you the second signal looks like
+belt-and-braces.
+
+CPU duty cycle cannot see a session that delegates its work. Sampled at 15 s intervals
+while session child 1394 ran `swift build` and `swift test` continuously:
+
+```
+t+15s 1394=0.0000%   t+60s 1394=0.0000%   t+105s 1394=0.0000%
+t+30s 1394=0.0000%   t+75s 1394=0.0000%   t+120s 1394=0.0000%
+t+45s 1394=0.0000%   t+90s 1394=0.0000%
+```
+
+Zero for the process, and zero for its whole subtree, while it was maximally busy. Each
+build ran in a short-lived grandchild that exited before the next sample and took its
+accumulated CPU with it. Independently reproduced over a 45 s window: 1:51.45 → 1:51.46,
+a 0.01 s delta, 0.022 % duty — below even the tightened threshold.
+
+So a CPU-only design classifies a flat-out session as idle, and it fails in the direction
+that gets a live session killed. The log signal catches exactly this case: in the same
+measurement the log age was 15 s while CPU had given up. The two signals fail in different
+directions — CPU misses delegated work, logs miss CPU-bound work that writes nothing — so
+each covers the other's blind spot.
+
 #### Two independent idle signals, and both must agree
 
 The first attempt used CPU duty cycle alone, with an activity threshold of 1 % of a core,
@@ -261,12 +287,26 @@ log 612 s old, while a `telemetry_queue….jsonl.delivered` beside it was only 5
 Counting those would let the leak keep the leaking wrapper permanently protected, exactly
 inverting the guard, so files whose names contain `telemetry` are ignored.
 
-#### Beobachtet auf der betroffenen Maschine
+### Auditing the guard before trusting it: `--idle-watch`
 
-`OpenZombr --idle-watch <Dauer> <Schwelle>` polls repeatedly and prints the
-classification without signalling anything. It exists because the override cannot be
-observed any other way: `--probe` takes a single reading and idleness needs at least two,
-while the menu bar app has the history but no textual output.
+**Run this before you enable auto-cleanup.** It is the only way to see how the guard would
+classify the processes on *your* machine without any risk of a kill: it polls, prints the
+verdict for every wrapper with a session, and signals nothing, ever.
+
+```
+OpenZombr --idle-watch <Dauer in s> <Schwelle in s>
+```
+
+Pass a short threshold to see the behaviour without waiting out the two hour default. The
+guard needs at least two readings, so a single `--probe` cannot show it, and the menu bar
+app has the history but no textual output. Both of the design defects described above were
+found with this mode rather than by reasoning.
+
+Read it as: a wrapper you recognise as a live session must say `AKTIV (geschützt)`. If one
+of your live sessions is ever released, do not enable auto-cleanup — send the output as a
+bug report instead.
+
+#### Beobachtet auf der betroffenen Maschine
 
 Run with a deliberately reckless 2 minute threshold, before the log signal existed:
 
@@ -288,6 +328,24 @@ pid 49812 — Sitzung 49871, CPU-idle 2 Min., Log-Alter unter 1 Min. → AKTIV (
 The log signal holds all three, including the live one that CPU alone gave up. The shipped
 default remains two hours; the point of the reckless threshold is that even it no longer
 releases a live session.
+
+#### "Keine Kandidaten" has two meanings, and they are reported separately
+
+A quiet cleanup run can mean two very different things:
+
+* every wrapper was read and found to be genuinely working, or
+* one or more wrappers could not be read at all, so the app had no basis for a decision.
+
+Both protect the process, but the second is a degraded state — the app is not deciding, it
+is blind — and it should be visible rather than looking like a clean bill of health. So the
+skip reason `sessionSignalUnavailable` is distinct from `hasActiveSession`, the run summary
+says `Keine Kandidaten — bei N Prozessen sind die Sitzungssignale nicht lesbar`, affected
+entries are marked `Signal unlesbar` in the menu, and every CSV row carries a
+`session_signal` column holding `cpu_idle=…;log_age=…` with `unknown` for whichever signal
+could not be read.
+
+Note that this is the expected state for the first poll or two after launch, because
+idleness needs at least two readings before it means anything.
 
 ### Killing a wrapper is survivable — but that is not the safety argument
 

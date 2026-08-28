@@ -36,7 +36,8 @@ public struct MenuBarContentView: View {
                 Text(
                     "  \(offender.name) (PID \(offender.pid)) · "
                         + "\(Formatting.count(offender.zombieCount)) Zombies · "
-                        + Formatting.age(offender.age()))
+                        + Formatting.age(offender.age())
+                        + (offender.hasUnreadableSessionSignal ? " · Signal unlesbar" : ""))
             }
         }
 

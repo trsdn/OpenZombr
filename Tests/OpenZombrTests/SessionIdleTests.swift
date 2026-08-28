@@ -162,11 +162,14 @@ final class SessionIdleTests: XCTestCase {
             pid: 60581, zombieCount: 900, liveChildCount: 2, sessionChildCount: 1,
             sessionChildPIDs: [60640], sessionIdleSeconds: nil)
         XCTAssertTrue(parent.isSessionActive(idleThreshold: 2 * 3600))
+        XCTAssertTrue(parent.hasUnreadableSessionSignal)
 
         let snapshot = Fixture.snapshot(offenders: [parent], protectedPIDs: [1])
         let selection = ZombieReaper(currentUID: uid)
             .selectTargets(in: snapshot, policy: CleanupPolicy())
-        XCTAssertEqual(selection.skipped.first?.reason, .hasActiveSession)
+        // Protected, but for the honest reason: the app could not read the signals rather
+        // than having read them and seen work.
+        XCTAssertEqual(selection.skipped.first?.reason, .sessionSignalUnavailable)
     }
 
     /// One unreadable child is enough to keep the whole parent protected.
@@ -451,5 +454,73 @@ final class SessionLogSignalTests: XCTestCase {
         enumerator.args = [42: ["some-daemon", "--verbose"]]
         XCTAssertNil(
             SessionLogProbe(enumerator: enumerator).logAgeSeconds(for: 42, now: Date()))
+    }
+}
+
+/// "Nothing to clean because everything is active" and "nothing to clean because the app
+/// cannot see" both prevent a kill, but only the second is a degraded state.
+final class DegradedSignalReportingTests: XCTestCase {
+    private let uid: uid_t = 501
+
+    private func selection(cpu: TimeInterval?, log: TimeInterval?) -> ZombieReaper.Selection {
+        let parent = Fixture.parent(
+            pid: 60581, zombieCount: 308, sessionChildCount: 1, sessionChildPIDs: [60640],
+            sessionIdleSeconds: cpu, sessionLogAgeSeconds: log)
+        return ZombieReaper(currentUID: uid).selectTargets(
+            in: Fixture.snapshot(offenders: [parent], protectedPIDs: [1]),
+            policy: CleanupPolicy())
+    }
+
+    func testAnActiveSessionAndAnUnreadableOneAreReportedDifferently() {
+        XCTAssertEqual(selection(cpu: 0, log: 0).skipped.map(\.reason), [.hasActiveSession])
+        XCTAssertEqual(
+            selection(cpu: nil, log: 0).skipped.map(\.reason), [.sessionSignalUnavailable])
+        XCTAssertEqual(
+            selection(cpu: 10 * 3600, log: nil).skipped.map(\.reason),
+            [.sessionSignalUnavailable])
+        XCTAssertEqual(
+            selection(cpu: nil, log: nil).skipped.map(\.reason), [.sessionSignalUnavailable])
+    }
+
+    /// Both still protect. Distinguishing them must not change what gets killed.
+    func testNeitherStateEverProducesATarget() {
+        for (cpu, log) in [(0.0, 0.0), (nil, 0.0), (10 * 3600.0, nil), (nil, nil)]
+            as [(TimeInterval?, TimeInterval?)]
+        {
+            XCTAssertTrue(selection(cpu: cpu, log: log).targets.isEmpty)
+        }
+    }
+
+    func testTheSummaryNamesTheDegradedStateInsteadOfSayingNothingToDo() {
+        let blind = Fixture.parent(
+            pid: 60581, zombieCount: 308, sessionChildCount: 1, sessionChildPIDs: [60640],
+            sessionIdleSeconds: nil, sessionLogAgeSeconds: nil)
+        let report = CleanupReport(
+            startedAt: Fixture.epoch, results: [],
+            skipped: [SkippedParent(parent: blind, reason: .sessionSignalUnavailable)],
+            zombiesBefore: 308, zombiesAfter: 308, processesBefore: 800, processesAfter: 800)
+
+        XCTAssertTrue(report.germanSummary.contains("nicht lesbar"), report.germanSummary)
+
+        let quiet = CleanupReport(
+            startedAt: Fixture.epoch, results: [], skipped: [],
+            zombiesBefore: 10, zombiesAfter: 10, processesBefore: 800, processesAfter: 800)
+        XCTAssertEqual(quiet.germanSummary, "Keine Kandidaten für die Bereinigung gefunden.")
+    }
+
+    /// The evidence log has to carry the distinction too, since that is what gets read
+    /// after the fact.
+    func testCSVRecordsBothSignalsIncludingWhenTheyAreUnreadable() {
+        let active = Fixture.parent(
+            pid: 60581, zombieCount: 308, sessionChildCount: 1, sessionChildPIDs: [60640],
+            sessionIdleSeconds: 42, sessionLogAgeSeconds: 7)
+        XCTAssertEqual(EvidenceCSVLog.sessionSignal(for: active), "cpu_idle=42;log_age=7")
+
+        let blind = active.withSessionIdle(nil, logAge: nil)
+        XCTAssertEqual(
+            EvidenceCSVLog.sessionSignal(for: blind), "cpu_idle=unknown;log_age=unknown")
+
+        let noSession = Fixture.parent(pid: 60581, zombieCount: 308)
+        XCTAssertEqual(EvidenceCSVLog.sessionSignal(for: noSession), "no-session")
     }
 }

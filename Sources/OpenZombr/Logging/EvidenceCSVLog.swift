@@ -10,7 +10,7 @@ public final class EvidenceCSVLog: @unchecked Sendable {
     public static let header =
         "timestamp,total_procs,zombies,limit,usage_pct,free_slots,"
         + "growth_per_min,eta_seconds,top_parent_pid,top_parent_name,top_parent_zombies,"
-        + "action,result"
+        + "session_signal,action,result"
 
     public let fileURL: URL
     private let maxBytes: UInt64
@@ -32,6 +32,7 @@ public final class EvidenceCSVLog: @unchecked Sendable {
         self.formatter = formatter
 
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        rotateIfHeaderChanged()
     }
 
     /// `~/Library/Application Support/OpenZombr/`.
@@ -105,10 +106,23 @@ public final class EvidenceCSVLog: @unchecked Sendable {
             top.map { String($0.pid) } ?? "",
             sanitize(top?.name ?? ""),
             top.map { String($0.zombieCount) } ?? "",
+            top.map(sessionSignal(for:)) ?? "",
             sanitize(action),
             sanitize(result),
         ]
         return fields.joined(separator: ",")
+    }
+
+    /// Whether the two idle signals could be read for the top offender, and what they say.
+    ///
+    /// Recorded per row because "no cleanup because everything is active" and "no cleanup
+    /// because the app could not see" are different events, and the evidence log is the
+    /// place where that difference has to survive.
+    static func sessionSignal(for parent: ZombieParent) -> String {
+        guard parent.hasActiveSession else { return "no-session" }
+        let cpu = parent.sessionIdleSeconds.map { String(format: "%.0f", $0) } ?? "unknown"
+        let log = parent.sessionLogAgeSeconds.map { String(format: "%.0f", $0) } ?? "unknown"
+        return "cpu_idle=\(cpu);log_age=\(log)"
     }
 
     /// Commas and newlines would break the "no quoting games" promise, so they are
@@ -133,6 +147,30 @@ public final class EvidenceCSVLog: @unchecked Sendable {
         try? handle.write(contentsOf: Data((line + "\n").utf8))
     }
 
+    /// Rotates the log when its header no longer matches the columns being written.
+    ///
+    /// The header is only written when the file is created, so adding a column would
+    /// otherwise leave an existing log with a stale header above rows that have one field
+    /// more — silently shifting every column for anyone reading it afterwards. Since this
+    /// file exists to be evidence, a mismatched schema is worse than a rotation.
+    func rotateIfHeaderChanged() {
+        let manager = FileManager.default
+        guard
+            manager.fileExists(atPath: fileURL.path),
+            let handle = try? FileHandle(forReadingFrom: fileURL)
+        else { return }
+        defer { try? handle.close() }
+
+        let probe = (try? handle.read(upToCount: Self.header.utf8.count + 1)) ?? Data()
+        let existing = String(decoding: probe, as: UTF8.self)
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first
+            .map(String.init)
+        guard let existing, existing != Self.header else { return }
+        try? handle.close()
+        rotate()
+    }
+
     private func rotateIfNeeded() {
         let manager = FileManager.default
         guard
@@ -140,7 +178,11 @@ public final class EvidenceCSVLog: @unchecked Sendable {
             let size = attributes[.size] as? UInt64,
             size >= maxBytes
         else { return }
+        rotate()
+    }
 
+    private func rotate() {
+        let manager = FileManager.default
         try? manager.removeItem(at: rotatedURL(index: keepRotations))
         for index in stride(from: keepRotations - 1, through: 1, by: -1) {
             let source = rotatedURL(index: index)

@@ -79,6 +79,9 @@ must remain proven by tests:
   were between turns.
 * No idle history means "busy", and one unreadable session child protects the parent.
   Absence of evidence must never read as evidence of idleness.
+* "No candidates because everything is active" and "no candidates because a signal could
+  not be read" must never render as the same message. The second is a degraded state and
+  has its own skip reason, summary wording, menu marker and CSV column.
 * Idleness needs two independent signals — CPU duty cycle and session log age — and both
   must agree before a parent is reaped. CPU alone is not enough: a session delegates its
   work to short-lived grandchildren, so one running builds flat out measured 0.0000 %

@@ -95,7 +95,14 @@ public struct CleanupReport: Sendable, Equatable {
 
     public var germanSummary: String {
         guard didAnything else {
-            return "Keine Kandidaten für die Bereinigung gefunden."
+            let blind = skipped.filter { $0.reason == .sessionSignalUnavailable }.count
+            guard blind > 0 else {
+                return "Keine Kandidaten für die Bereinigung gefunden."
+            }
+            // Saying only "no candidates" here would hide the fact that the app could not
+            // see well enough to have candidates.
+            return "Keine Kandidaten — bei \(Formatting.count(blind)) Prozessen sind die "
+                + "Sitzungssignale nicht lesbar."
         }
         if verified {
             return "\(Formatting.count(zombiesReaped)) Zombies aufgeräumt, "
@@ -196,7 +203,11 @@ public struct ZombieReaper: Sendable {
             if policy.spareParentsWithActiveSession
                 && parent.isSessionActive(idleThreshold: threshold)
             {
-                skipped.append(SkippedParent(parent: parent, reason: .hasActiveSession))
+                skipped.append(
+                    SkippedParent(
+                        parent: parent,
+                        reason: parent.hasUnreadableSessionSignal
+                            ? .sessionSignalUnavailable : .hasActiveSession))
                 continue
             }
             if !policy.permits(parent) {

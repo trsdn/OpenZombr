@@ -65,7 +65,8 @@ final class EvidenceCSVLogTests: XCTestCase {
         XCTAssertEqual(fields[8], "87537")
         XCTAssertEqual(fields[9], "agency")
         XCTAssertEqual(fields[10], "600")
-        XCTAssertEqual(fields[11], "poll")
+        XCTAssertEqual(fields[11], "no-session")
+        XCTAssertEqual(fields[12], "poll")
     }
 
     /// A process name containing a comma would otherwise shift every following column.
@@ -137,5 +138,47 @@ final class EvidenceCSVLogTests: XCTestCase {
     func testDefaultDirectoryIsUnderApplicationSupport() {
         XCTAssertTrue(
             EvidenceCSVLog.defaultDirectory().path.hasSuffix("Application Support/OpenZombr"))
+    }
+}
+
+extension EvidenceCSVLogTests {
+    /// A log whose header predates a new column would otherwise put every following field
+    /// under the wrong heading, which is fatal for something meant to be evidence.
+    func testALogWrittenWithAnOlderHeaderIsRotatedAway() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("openzombr-csv-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = directory.appendingPathComponent("zombie-evidence.csv")
+        try "timestamp,total_procs,action,result\n2026-01-01T00:00:00Z,1,poll,\n"
+            .write(to: url, atomically: true, encoding: .utf8)
+
+        _ = EvidenceCSVLog(directory: directory)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: url.path),
+            "the stale-schema log must be moved aside")
+        let rotated = directory.appendingPathComponent("zombie-evidence.1.csv")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: rotated.path),
+            "and kept, not deleted — it is still evidence")
+    }
+
+    func testAMatchingHeaderIsLeftAlone() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("openzombr-csv-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let url = directory.appendingPathComponent("zombie-evidence.csv")
+        try (EvidenceCSVLog.header + "\nrow\n").write(to: url, atomically: true, encoding: .utf8)
+
+        _ = EvidenceCSVLog(directory: directory)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("zombie-evidence.1.csv").path))
     }
 }

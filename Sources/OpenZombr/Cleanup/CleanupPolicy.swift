@@ -92,6 +92,11 @@ public enum SkipReason: String, Sendable, Equatable {
     case parentIsZombie
     case runLimitReached
     case hasActiveSession
+    /// Protected because at least one idle signal could not be read at all, so the app has
+    /// no basis for a decision. Distinct from `hasActiveSession`, which means the signals
+    /// were read and said the session is alive. Both prevent a kill, but only this one is
+    /// a degraded state the user may want to act on.
+    case sessionSignalUnavailable
 
     public var germanDescription: String {
         switch self {
@@ -103,6 +108,8 @@ public enum SkipReason: String, Sendable, Equatable {
         case .parentIsZombie: return "Elternprozess ist selbst ein Zombie"
         case .runLimitReached: return "Limit pro Durchlauf erreicht"
         case .hasActiveSession: return "hat eine aktive Sitzung (Kindprozess arbeitet)"
+        case .sessionSignalUnavailable:
+            return "Sitzungssignale nicht lesbar — keine Entscheidungsgrundlage"
         }
     }
 }

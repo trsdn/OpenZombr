@@ -79,7 +79,9 @@ final class LivenessProtectionTests: XCTestCase {
             selection.targets.isEmpty,
             "a wrapper hosting a live session must not be killed even at 400 zombies")
         XCTAssertEqual(selection.skipped.first?.parent.pid, 1332)
-        XCTAssertEqual(selection.skipped.first?.reason, .hasActiveSession)
+        // The signals were never sampled in this fixture, so the honest reason is that the
+        // app has no basis for a decision — not that it saw a live session.
+        XCTAssertEqual(selection.skipped.first?.reason, .sessionSignalUnavailable)
     }
 
     /// The leak's own children must not be mistaken for a session.

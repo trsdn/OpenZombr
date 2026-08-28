@@ -134,7 +134,9 @@ final class CleanupServiceTests: XCTestCase {
         let guardedReport = guarded.run(on: guardedSnapshot, policy: policy, now: Fixture.epoch)
         XCTAssertTrue(
             spared.deliveries.isEmpty, "by default a wrapper with a live session is untouched")
-        XCTAssertEqual(guardedReport.skipped.first?.reason, .hasActiveSession)
+        // The signals are not sampled in this fixture, so the skip is reported as "cannot
+        // see" rather than "saw a live session". Either way the wrapper is spared.
+        XCTAssertEqual(guardedReport.skipped.first?.reason, .sessionSignalUnavailable)
 
         var permissive = policy
         permissive.spareParentsWithActiveSession = false

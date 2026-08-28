@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard would have protected all six wrappers reaped during the incident, since each had a
   live `copilot` child that was resident but finished. Idleness is measured from
   accumulated CPU time deltas across polls, converted through the mach timebase.
+- `sessionSignalUnavailable` as a skip reason distinct from `hasActiveSession`, plus a
+  `session_signal` CSV column, a menu marker and dedicated summary wording, so a run that
+  found nothing because it could not read the signals is not reported as a clean run.
+- `--idle-watch` documented as the supported way to audit the guard before enabling
+  auto-cleanup. It polls, prints a verdict per wrapper, and never signals anything.
 - Session log age as a second, independent idle signal, read from the `--log-dir` argument
   via `KERN_PROCARGS2`. Both signals must agree that a session is finished before its
   parent can be reaped. CPU alone proved unreliable: a session running builds continuously
