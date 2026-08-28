@@ -14,8 +14,14 @@ public struct ZombrApp: App {
         } label: {
             // Glyph plus compact figure. The glyph changes shape with severity, so the
             // state stays readable as a template image in light and dark menu bars.
-            Label(model.menuBarTitle, systemImage: model.severity.symbolName)
-                .onAppear { model.start() }
+            //
+            // An explicit HStack rather than a Label: MenuBarExtra renders a Label
+            // icon-only, which would silently drop the figure that is the whole point.
+            HStack(spacing: 3) {
+                Image(systemName: model.severity.symbolName)
+                Text(model.menuBarTitle)
+            }
+            .onAppear { model.start() }
         }
         .menuBarExtraStyle(.menu)
 
