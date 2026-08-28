@@ -87,10 +87,68 @@ public struct ZombieSampler: Sendable {
         self.pathResolutionLimit = max(0, pathResolutionLimit)
     }
 
-    public func sample(now: Date = Date()) throws -> ZombieSnapshot {
+    public func sample(now: Date = Date(), idleTracker: IdleTracker? = nil) throws
+        -> ZombieSnapshot
+    {
         let entries = try enumerator.enumerateProcesses()
         let limit = try limitReader.maximumProcessesPerUID()
-        return snapshot(from: entries, limit: limit, now: now)
+        let base = snapshot(from: entries, limit: limit, now: now)
+        guard let idleTracker else { return base }
+        return applyingIdle(to: base, entries: entries, tracker: idleTracker, now: now)
+    }
+
+    /// Samples CPU time for the session children of every offending parent and folds the
+    /// resulting idle durations back into the snapshot.
+    ///
+    /// Only session children are sampled — a handful of pids — because this is one
+    /// syscall each and the app must stay cheap on a machine that is already struggling.
+    public func applyingIdle(
+        to snapshot: ZombieSnapshot,
+        entries: [ProcessEntry],
+        tracker: IdleTracker,
+        now: Date
+    ) -> ZombieSnapshot {
+        let byPID = Dictionary(entries.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+
+        var updated: [ZombieParent] = []
+        updated.reserveCapacity(snapshot.offenders.count)
+        for offender in snapshot.offenders {
+            guard !offender.sessionChildPIDs.isEmpty else {
+                updated.append(offender)
+                continue
+            }
+            var minimumIdle: TimeInterval?
+            var sawUnknown = false
+            for child in offender.sessionChildPIDs {
+                guard let entry = byPID[child], let cpu = enumerator.cpuSeconds(for: child) else {
+                    sawUnknown = true
+                    continue
+                }
+                guard
+                    let idle = tracker.observe(
+                        pid: child, startTime: entry.startTime, cpuSeconds: cpu, now: now)
+                else {
+                    sawUnknown = true
+                    continue
+                }
+                minimumIdle = min(minimumIdle ?? idle, idle)
+            }
+            // A wrapper counts as idle only when *every* session child is known to be
+            // idle. One unreadable child is enough to keep the parent protected.
+            updated.append(offender.withSessionIdle(sawUnknown ? nil : minimumIdle))
+        }
+
+        tracker.prune(keeping: Set(entries.map(\.pid)))
+
+        return ZombieSnapshot(
+            timestamp: snapshot.timestamp,
+            uid: snapshot.uid,
+            totalProcesses: snapshot.totalProcesses,
+            zombieCount: snapshot.zombieCount,
+            limit: snapshot.limit,
+            offenders: updated,
+            protectedPIDs: snapshot.protectedPIDs
+        )
     }
 
     /// Pure transformation, exposed so tests can pin the aggregation rules.
@@ -107,14 +165,14 @@ public struct ZombieSampler: Sendable {
         // Live children per parent, split into self-spawns (same executable name as the
         // parent) and everything else. Built in one pass over the whole table.
         var liveChildren: [pid_t: Int] = [:]
-        var sessionChildren: [pid_t: Int] = [:]
+        var sessionChildren: [pid_t: [pid_t]] = [:]
         for entry in entries where !entry.isZombie {
             let parentPID: pid_t = entry.ppid
             guard counts[parentPID] != nil else { continue }
             liveChildren[parentPID, default: 0] += 1
             let parentName: String = byPID[parentPID]?.name ?? ""
             if entry.name != parentName {
-                sessionChildren[parentPID, default: 0] += 1
+                sessionChildren[parentPID, default: []].append(entry.pid)
             }
         }
 
@@ -127,7 +185,7 @@ public struct ZombieSampler: Sendable {
             let started: Date = parent?.startTime ?? now
             let parentIsZombie: Bool = parent?.isZombie ?? false
             let live: Int = liveChildren[pid] ?? 0
-            let session: Int = sessionChildren[pid] ?? 0
+            let sessionPIDs: [pid_t] = sessionChildren[pid] ?? []
             offenders.append(
                 ZombieParent(
                     pid: pid,
@@ -138,7 +196,8 @@ public struct ZombieSampler: Sendable {
                     startTime: started,
                     parentIsZombie: parentIsZombie,
                     liveChildCount: live,
-                    sessionChildCount: session
+                    sessionChildCount: sessionPIDs.count,
+                    sessionChildPIDs: sessionPIDs.sorted()
                 )
             )
         }
@@ -175,7 +234,9 @@ public struct ZombieSampler: Sendable {
                 startTime: offender.startTime,
                 parentIsZombie: offender.parentIsZombie,
                 liveChildCount: offender.liveChildCount,
-                sessionChildCount: offender.sessionChildCount
+                sessionChildCount: offender.sessionChildCount,
+                sessionChildPIDs: offender.sessionChildPIDs,
+                sessionIdleSeconds: offender.sessionIdleSeconds
             )
         }
     }

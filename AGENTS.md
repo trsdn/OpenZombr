@@ -71,6 +71,14 @@ must remain proven by tests:
   different executable is protected independently of ancestry. Note that "has live
   children" on its own does **not** discriminate — the leak itself is a stream of live
   children — so the check must exclude the parent's own self-spawns.
+* Existence of a session child is not sufficient either. The wrappers reaped during the
+  incident all had live `copilot` children; they were finished sessions whose child was
+  still resident. A session child that has consumed no CPU for longer than the configured
+  threshold (default 2 h) no longer protects its parent. The threshold must stay on the
+  scale of hours: a 20 s sample showed the user's own session idle simply because they
+  were between turns.
+* No idle history means "busy", and one unreadable session child protects the parent.
+  Absence of evidence must never read as evidence of idleness.
 * Zombies themselves are never signalled.
 * Only parents at or above the zombie threshold are targeted.
 * The denylist overrides the allowlist, and an empty allowlist matches nothing.

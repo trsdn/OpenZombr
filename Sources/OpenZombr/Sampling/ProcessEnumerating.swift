@@ -10,6 +10,12 @@ public protocol ProcessEnumerating: Sendable {
     /// exited, or it belongs to another user). Only called for a handful of candidate
     /// parents, never for the whole table.
     func executablePath(for pid: pid_t) -> String?
+    /// Accumulated user + system CPU time for a pid, or `nil` when it cannot be read.
+    ///
+    /// Used to decide whether a process is actually doing work. Only called for the
+    /// handful of live session children belonging to offending parents, never for the
+    /// whole table, because it is one syscall per pid.
+    func cpuSeconds(for pid: pid_t) -> TimeInterval?
 }
 
 /// Reads `kern.maxprocperuid`.

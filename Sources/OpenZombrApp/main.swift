@@ -27,7 +27,10 @@ if CommandLine.arguments.contains("--probe") {
                         + Formatting.age(offender.age())
                         + ", \(offender.liveChildCount) lebende Kinder"
                         + (offender.hasActiveSession
-                            ? " (aktive Sitzung: \(offender.sessionChildCount))" : " (keine aktive Sitzung)")
+                            ? " (Sitzung: \(offender.sessionChildCount), idle "
+                                + (offender.sessionIdleSeconds.map(Formatting.duration)
+                                    ?? "unbekannt") + ")"
+                            : " (keine Sitzung)")
                         + " — \(offender.executablePath ?? "Pfad unbekannt")")
             }
         }

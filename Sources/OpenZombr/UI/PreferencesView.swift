@@ -62,6 +62,19 @@ public struct PreferencesView: View {
                         + "wenn OpenZombr beim Anmelden von launchd gestartet wurde.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Stepper(
+                    "Sitzung gilt als beendet nach "
+                        + Formatting.duration(preferences.sessionIdleHours * 3600)
+                        + " ohne CPU-Nutzung",
+                    value: $preferences.sessionIdleHours, in: 0.5...24, step: 0.5
+                )
+                .disabled(!preferences.spareActiveSessions)
+                Text(
+                    "Ein Kindprozess, der stundenlang keine CPU-Zeit verbraucht, gehört zu "
+                        + "einer beendeten Sitzung und schützt den Elternprozess nicht mehr. "
+                        + "Kurze Denkpausen bleiben dadurch unangetastet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 LabeledContent("Ab Zombies pro Elternprozess") {
                     TextField(
                         "", value: $preferences.minimumZombiesPerParent,

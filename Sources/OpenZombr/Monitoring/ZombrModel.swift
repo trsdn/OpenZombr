@@ -15,6 +15,9 @@ public final class ZombrModel: ObservableObject {
     public let log: EvidenceCSVLog
 
     private let sampler: ZombieSampler
+    /// Owned here rather than by the sampler because it accumulates state across polls.
+    /// Only touched from the main actor, where polling happens.
+    private let idleTracker = IdleTracker()
     private let cleanupService: CleanupService
     private let reaper: ZombieReaper
     private let notifier: AlertNotifying
@@ -95,7 +98,7 @@ public final class ZombrModel: ObservableObject {
 
     public func poll() {
         do {
-            let snapshot = try sampler.sample()
+            let snapshot = try sampler.sample(idleTracker: idleTracker)
             self.snapshot = snapshot
             self.lastError = nil
 

@@ -49,7 +49,9 @@ enum Fixture {
         uid: uid_t = Fixture.uid,
         parentIsZombie: Bool = false,
         liveChildCount: Int = 0,
-        sessionChildCount: Int = 0
+        sessionChildCount: Int = 0,
+        sessionChildPIDs: [pid_t] = [],
+        sessionIdleSeconds: TimeInterval? = nil
     ) -> ZombieParent {
         ZombieParent(
             pid: pid,
@@ -60,7 +62,9 @@ enum Fixture {
             startTime: epoch.addingTimeInterval(-3600),
             parentIsZombie: parentIsZombie,
             liveChildCount: liveChildCount,
-            sessionChildCount: sessionChildCount
+            sessionChildCount: sessionChildCount,
+            sessionChildPIDs: sessionChildPIDs,
+            sessionIdleSeconds: sessionIdleSeconds
         )
     }
 
@@ -93,10 +97,16 @@ final class StubProcessEnumerator: ProcessEnumerating, @unchecked Sendable {
     private(set) var pathLookups: [pid_t] = []
     private let lock = NSLock()
 
-    init(entries: [ProcessEntry], paths: [pid_t: String] = [:]) {
+    /// Mutable so a test can advance CPU time between polls.
+    var cpu: [pid_t: TimeInterval] = [:]
+
+    init(entries: [ProcessEntry], paths: [pid_t: String] = [:], cpu: [pid_t: TimeInterval] = [:]) {
         self.entries = entries
         self.paths = paths
+        self.cpu = cpu
     }
+
+    func cpuSeconds(for pid: pid_t) -> TimeInterval? { cpu[pid] }
 
     func enumerateProcesses() throws -> [ProcessEntry] { entries }
 

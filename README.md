@@ -9,6 +9,32 @@ documentation in English.
 
 ---
 
+
+#### Idle heißt nicht „null CPU"
+
+A session that is finished still ticks. Measured on the affected machine over a 3 minute
+window:
+
+| pid | role | ΔCPU over 180 s | duty cycle |
+|---|---|---|---|
+| 1394 | session between turns | +0.40 s | 0.22 % |
+| 29624 | fresh wrapper spawn | +0.01 s | 0.006 % |
+| 86242 | session doing work | +4.56 s | 2.5 % |
+| 17890 | session doing work | +7.45 s | 4.1 % |
+
+Treating *any* CPU increase as activity would therefore reset the idle clock on every
+poll for ever, and the override could never fire — the same "never clean anything"
+outcome it exists to remove. Activity is instead a rate: CPU consumed since the previous
+poll divided by the time since it, compared against a threshold of **1 % of one core**.
+That sits an order of magnitude above the measured heartbeat and an order of magnitude
+below the measured floor of real work.
+
+The rate is measured per poll, not since the last activity. Measuring it since the last
+activity would dilute a genuine wake-up by however long the process had been idle
+beforehand, so a session resuming after three hours would take hours to be recognised as
+working again. A slow trickle cannot creep past the threshold either, because a trickle's
+per-poll rate is below it by definition.
+
 ## The incident this was built for
 
 Machine: Mac mini M4 Pro (`Mac16,11`), 24 GB, macOS 26.6.2.
@@ -148,16 +174,61 @@ pid 17831 agency — 11 zombies, 2 live children
 The signal that *does* discriminate is a live child running a **different executable**.
 The telemetry children `agency` spawns are themselves called `agency`; a wrapper doing
 real work additionally has a `copilot` child, which is not a self-spawn. So OpenZombr
-counts live children whose executable differs from the parent's, and:
+counts live children whose executable differs from the parent's, and never signals a
+parent that has one (default, toggleable in preferences).
 
-* never signals a parent with such a child (default, toggleable in preferences), and
-* orders candidates idle-first, so a wrapper with no session is always reaped before one
-  that has work attached, regardless of zombie counts.
+### That is still not enough on its own: the idle override
 
-The honest consequence: on a machine where every wrapper is hosting a session, OpenZombr
-will report *"Bereinigungs-Kandidaten: keine"* and clean nothing, rather than guess. In
-the actual incident several of the six wrappers were left over from closed sessions and
-would have had no session child at all.
+Existence of a session child is *also* not the signal. This was established against the
+incident itself. Wrapper 60581 was one of the six that had to be killed, and its live
+children at the time were:
+
+```
+60640 60581 S   .../copilot --no-auto-update --log-dir ...
+93295 60581 Ss  .../agency send-telemetry-events --queue-file ...
+```
+
+A live `copilot` child — a different executable — so a rule based purely on *having* a
+session child protects it. Killing it was nonetheless exactly right: it freed 308 slots
+and the `copilot` child survived by reparenting to `launchd`. Every one of the six looked
+like this. A guard that stopped at "has a session child" would have protected all six and
+left the machine to hit the fork limit, which is to say it would have prevented the one
+fix the app exists to perform.
+
+The wrappers that needed reaping were **finished sessions whose `copilot` child was still
+resident**. What separates those from a working session is not the child's existence but
+its behaviour: a finished session stops consuming CPU. So OpenZombr samples accumulated
+user + system CPU time (`proc_pidinfo(PROC_PIDTASKINFO)`, converted through the mach
+timebase — the raw counters are in mach absolute time units, and skipping that conversion
+under-reports by a factor of ~41.7 on Apple Silicon) for each session child on every poll.
+A child whose CPU total has not moved has run for zero cycles in between.
+
+The window has to be measured in **hours**. Sampling over 20 s during the incident showed
+the user's *own* session child as idle, purely because they were between turns:
+
+```
+1394  1:12.56 -> 1:12.56  IDLE    <- the user's own session, just thinking
+17890 0:30.89 -> 0:31.79  ACTIVE
+86242 1:48.58 -> 1:49.20  ACTIVE
+```
+
+A short window would therefore reap a live session mid-thought. The default threshold is
+**2 hours** of zero CPU, configurable: long enough that thinking, reading, or lunch is
+never mistaken for a finished session, short enough that a machine leaking ~600 zombies an
+hour is rescued well before the limit. The wrapper that gave the game away on the day had
+been idle for five hours.
+
+Candidates are ordered idle-first, so a wrapper with no session at all is reaped before
+one whose session is merely stale, which is reaped before an active one is even
+considered.
+
+Two deliberate conservative choices:
+
+* **No history means busy.** Idleness can only be established by observing two readings,
+  so for the first couple of hours after OpenZombr starts, nothing is eligible through the
+  idle override. That is correct: at that point the app genuinely does not know.
+* **One unreadable child protects the parent.** A wrapper counts as idle only when *every*
+  session child is known to be idle.
 
 ### Killing a wrapper is survivable — but that is not the safety argument
 

@@ -14,8 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   descendant of the process in question, so under `launchd` — the launch-at-login case —
   the ancestor set collapses to `{self, 1}` and protects nothing. Liveness does not depend
   on how the app itself was started. Toggleable in preferences, on by default.
-- Candidate ordering is now idle-first: a parent with no live session is always considered
-  before one that has work attached, regardless of zombie counts.
+- Idle override: a session child that has consumed no CPU for longer than a configurable
+  threshold (default 2 hours) no longer protects its parent. Without this the previous
+  guard would have protected all six wrappers reaped during the incident, since each had a
+  live `copilot` child that was resident but finished. Idleness is measured from
+  accumulated CPU time deltas across polls, converted through the mach timebase.
+- Candidate ordering is now idle-first: a parent with no live session is considered before
+  one whose session is stale, which is considered before an active one.
 - `liveChildCount` and `sessionChildCount` per offending parent, shown in `--probe`, and
   a `hat noch eine aktive Sitzung` skip reason so a spared process is always explainable.
 

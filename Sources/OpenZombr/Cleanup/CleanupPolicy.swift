@@ -9,6 +9,10 @@ import Foundation
 public struct CleanupPolicy: Sendable, Equatable {
     public static let defaultAllowedPatterns = ["agency"]
     public static let defaultMinimumZombies = 100
+    /// Two hours. Long enough that a user thinking, reading, or at lunch is never
+    /// mistaken for a finished session; short enough that a machine leaking 600 zombies
+    /// an hour is rescued well before it reaches the fork limit.
+    public static let defaultSessionIdleThreshold: TimeInterval = 2 * 3600
 
     /// A parent is only ever considered once it owns at least this many zombies.
     /// Reaping a handful of zombies is not worth killing a process over.
@@ -37,6 +41,14 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// launchd. It is off the default path all the same, because "the damage happened to
     /// be recoverable" is not a safety argument.
     public var spareParentsWithActiveSession: Bool
+    /// How long a session child must have consumed no CPU before its parent stops being
+    /// treated as busy.
+    ///
+    /// Deliberately hours, not minutes. Sampling over 20 s during the incident showed the
+    /// user's own session child idle simply because they were between turns, so a short
+    /// window would reap a live session that happens to be thinking. The wrappers that
+    /// actually needed reaping had been idle for hours - one for five.
+    public var sessionIdleThreshold: TimeInterval
 
     public init(
         minimumZombiesPerParent: Int = CleanupPolicy.defaultMinimumZombies,
@@ -44,7 +56,8 @@ public struct CleanupPolicy: Sendable, Equatable {
         deniedNamePatterns: [String] = [],
         terminationGracePeriod: TimeInterval = 2,
         maximumTargetsPerRun: Int = 10,
-        spareParentsWithActiveSession: Bool = true
+        spareParentsWithActiveSession: Bool = true,
+        sessionIdleThreshold: TimeInterval = CleanupPolicy.defaultSessionIdleThreshold
     ) {
         self.minimumZombiesPerParent = max(1, minimumZombiesPerParent)
         self.allowedNamePatterns = allowedNamePatterns.filter { !$0.isEmpty }
@@ -52,6 +65,7 @@ public struct CleanupPolicy: Sendable, Equatable {
         self.terminationGracePeriod = max(0, terminationGracePeriod)
         self.maximumTargetsPerRun = max(1, maximumTargetsPerRun)
         self.spareParentsWithActiveSession = spareParentsWithActiveSession
+        self.sessionIdleThreshold = max(60, sessionIdleThreshold)
     }
 
     /// Substring matching, not regex: the patterns are typed by a user into a
@@ -88,7 +102,7 @@ public enum SkipReason: String, Sendable, Equatable {
         case .notPermittedByPolicy: return "nicht in der Erlaubnisliste"
         case .parentIsZombie: return "Elternprozess ist selbst ein Zombie"
         case .runLimitReached: return "Limit pro Durchlauf erreicht"
-        case .hasActiveSession: return "hat noch eine aktive Sitzung"
+        case .hasActiveSession: return "hat eine aktive Sitzung (Kindprozess arbeitet)"
         }
     }
 }

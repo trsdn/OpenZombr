@@ -70,10 +70,31 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
     /// not. Measured: wrapper 1332 held 41 zombies and dozens of `agency` self-spawns
     /// while hosting the user's live session as a single `copilot` child.
     public let sessionChildCount: Int
+    /// The pids behind `sessionChildCount`, so their CPU time can be sampled.
+    public let sessionChildPIDs: [pid_t]
+    /// How long the *least* idle session child has gone without consuming CPU, or `nil`
+    /// when there is no history for it yet.
+    ///
+    /// `nil` means "no evidence", which is read as active. A wrapper is only idle if
+    /// every one of its session children is idle, hence the minimum.
+    public let sessionIdleSeconds: TimeInterval?
 
     /// True when the parent still has a live child that is not one of its own
     /// short-lived self-spawns, i.e. it is plausibly hosting real work.
     public var hasActiveSession: Bool { sessionChildCount > 0 }
+
+    /// Whether the session should be treated as live, given how long a child must be
+    /// idle before it stops counting.
+    ///
+    /// A session child that exists but has burned no CPU for hours is a finished session
+    /// that simply has not exited. That describes every wrapper reaped during the
+    /// incident, so without this the guard would protect exactly the processes that need
+    /// reaping.
+    public func isSessionActive(idleThreshold: TimeInterval) -> Bool {
+        guard hasActiveSession else { return false }
+        guard let idle = sessionIdleSeconds else { return true }
+        return idle < idleThreshold
+    }
 
     public var id: pid_t { pid }
 
@@ -86,7 +107,9 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
         startTime: Date,
         parentIsZombie: Bool = false,
         liveChildCount: Int = 0,
-        sessionChildCount: Int = 0
+        sessionChildCount: Int = 0,
+        sessionChildPIDs: [pid_t] = [],
+        sessionIdleSeconds: TimeInterval? = nil
     ) {
         self.pid = pid
         self.uid = uid
@@ -97,6 +120,17 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
         self.parentIsZombie = parentIsZombie
         self.liveChildCount = max(0, liveChildCount)
         self.sessionChildCount = max(0, sessionChildCount)
+        self.sessionChildPIDs = sessionChildPIDs
+        self.sessionIdleSeconds = sessionIdleSeconds
+    }
+
+    /// Copy with idle information filled in, once CPU time has been sampled.
+    public func withSessionIdle(_ seconds: TimeInterval?) -> ZombieParent {
+        ZombieParent(
+            pid: pid, uid: uid, name: name, executablePath: executablePath,
+            zombieCount: zombieCount, startTime: startTime, parentIsZombie: parentIsZombie,
+            liveChildCount: liveChildCount, sessionChildCount: sessionChildCount,
+            sessionChildPIDs: sessionChildPIDs, sessionIdleSeconds: seconds)
     }
 
     public func age(now: Date = Date()) -> TimeInterval {

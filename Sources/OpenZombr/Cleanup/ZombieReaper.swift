@@ -165,10 +165,11 @@ public struct ZombieReaper: Sendable {
         var targets: [ZombieParent] = []
         var skipped: [SkippedParent] = []
 
+        let threshold = policy.sessionIdleThreshold
         let ordered = snapshot.offenders.sorted { lhs, rhs in
-            if lhs.hasActiveSession != rhs.hasActiveSession {
-                return !lhs.hasActiveSession
-            }
+            let lhsBusy = lhs.isSessionActive(idleThreshold: threshold)
+            let rhsBusy = rhs.isSessionActive(idleThreshold: threshold)
+            if lhsBusy != rhsBusy { return !lhsBusy }
             if lhs.zombieCount != rhs.zombieCount {
                 return lhs.zombieCount > rhs.zombieCount
             }
@@ -192,7 +193,9 @@ public struct ZombieReaper: Sendable {
                 skipped.append(SkippedParent(parent: parent, reason: .parentIsZombie))
                 continue
             }
-            if policy.spareParentsWithActiveSession && parent.hasActiveSession {
+            if policy.spareParentsWithActiveSession
+                && parent.isSessionActive(idleThreshold: threshold)
+            {
                 skipped.append(SkippedParent(parent: parent, reason: .hasActiveSession))
                 continue
             }

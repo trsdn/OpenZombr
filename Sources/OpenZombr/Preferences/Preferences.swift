@@ -13,6 +13,7 @@ public final class Preferences: ObservableObject {
         public static let deniedPatterns = "deniedNamePatterns"
         public static let notificationsEnabled = "notificationsEnabled"
         public static let spareActiveSessions = "spareActiveSessions"
+        public static let sessionIdleHours = "sessionIdleHours"
     }
 
     public static let defaultPollInterval: TimeInterval = 60
@@ -93,6 +94,11 @@ public final class Preferences: ObservableObject {
         didSet { defaults.set(spareActiveSessions, forKey: Key.spareActiveSessions) }
     }
 
+    /// Hours a session child must be idle before its parent is eligible again.
+    @Published public var sessionIdleHours: Double {
+        didSet { defaults.set(sessionIdleHours, forKey: Key.sessionIdleHours) }
+    }
+
     @Published public var notificationsEnabled: Bool {
         didSet { defaults.set(notificationsEnabled, forKey: Key.notificationsEnabled) }
     }
@@ -120,6 +126,9 @@ public final class Preferences: ObservableObject {
             defaults.object(forKey: Key.notificationsEnabled) as? Bool ?? true
         self.spareActiveSessions =
             defaults.object(forKey: Key.spareActiveSessions) as? Bool ?? true
+        self.sessionIdleHours =
+            defaults.object(forKey: Key.sessionIdleHours) as? Double
+            ?? CleanupPolicy.defaultSessionIdleThreshold / 3600
     }
 
     public var thresholds: Thresholds {
@@ -134,7 +143,8 @@ public final class Preferences: ObservableObject {
             minimumZombiesPerParent: minimumZombiesPerParent,
             allowedNamePatterns: Self.patterns(from: allowedPatternsText),
             deniedNamePatterns: Self.patterns(from: deniedPatternsText),
-            spareParentsWithActiveSession: spareActiveSessions
+            spareParentsWithActiveSession: spareActiveSessions,
+            sessionIdleThreshold: sessionIdleHours * 3600
         )
     }
 
