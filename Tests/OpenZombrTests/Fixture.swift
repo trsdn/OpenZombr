@@ -51,7 +51,8 @@ enum Fixture {
         liveChildCount: Int = 0,
         sessionChildCount: Int = 0,
         sessionChildPIDs: [pid_t] = [],
-        sessionIdleSeconds: TimeInterval? = nil
+        sessionIdleSeconds: TimeInterval? = nil,
+        sessionLogAgeSeconds: TimeInterval? = nil
     ) -> ZombieParent {
         ZombieParent(
             pid: pid,
@@ -64,7 +65,8 @@ enum Fixture {
             liveChildCount: liveChildCount,
             sessionChildCount: sessionChildCount,
             sessionChildPIDs: sessionChildPIDs,
-            sessionIdleSeconds: sessionIdleSeconds
+            sessionIdleSeconds: sessionIdleSeconds,
+            sessionLogAgeSeconds: sessionLogAgeSeconds
         )
     }
 
@@ -107,6 +109,10 @@ final class StubProcessEnumerator: ProcessEnumerating, @unchecked Sendable {
     }
 
     func cpuSeconds(for pid: pid_t) -> TimeInterval? { cpu[pid] }
+
+    var args: [pid_t: [String]] = [:]
+
+    func arguments(for pid: pid_t) -> [String]? { args[pid] }
 
     func enumerateProcesses() throws -> [ProcessEntry] { entries }
 
@@ -214,4 +220,19 @@ extension UserDefaults {
         defaults.removePersistentDomain(forName: name)
         return defaults
     }
+}
+
+/// Reports a fixed log age per session pid, so the second idle signal can be pinned
+/// without touching the filesystem.
+struct StubLogProbe: SessionLogProbing {
+    var ages: [pid_t: TimeInterval] = [:]
+
+    func logAgeSeconds(for pid: pid_t, now: Date) -> TimeInterval? { ages[pid] }
+}
+
+/// Log probe driven by a closure, for tests where the age has to grow with the clock.
+struct LogProbeBox: SessionLogProbing {
+    let age: @Sendable (pid_t, Date) -> TimeInterval?
+
+    func logAgeSeconds(for pid: pid_t, now: Date) -> TimeInterval? { age(pid, now) }
 }

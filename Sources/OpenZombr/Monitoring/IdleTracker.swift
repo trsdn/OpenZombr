@@ -45,10 +45,19 @@ public final class IdleTracker: @unchecked Sendable {
 
     private var observations: [pid_t: Observation] = [:]
 
-    /// Fraction of one core above which a process counts as working. The default of 1 %
-    /// sits an order of magnitude above the measured heartbeat of an idle session and an
-    /// order of magnitude below the measured floor of a working one.
-    public static let defaultActivityRateThreshold: Double = 0.01
+    /// Fraction of one core above which a process counts as working.
+    ///
+    /// Re-derived from measurement after an earlier value of 1 % was shown to rest on a
+    /// bad sample. Sampling every session child on the affected machine at 60 s intervals
+    /// for 28 process-minutes gave a resting rate of exactly 0.0000 %, while the lowest
+    /// rate observed from a session doing real work was 1.29 %. 0.1 % therefore sits an
+    /// order of magnitude below the observed floor of work and clear of everything
+    /// observed at rest, which is what the previous value only appeared to do — its real
+    /// margin above the working floor was 1.3x, not the 10x claimed.
+    ///
+    /// Erring low is the safe direction: a lower threshold makes processes look *busier*,
+    /// and a busy process is protected.
+    public static let defaultActivityRateThreshold: Double = 0.001
 
     private let activityRateThreshold: Double
 

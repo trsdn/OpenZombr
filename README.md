@@ -205,56 +205,89 @@ Two deliberate conservative choices:
 * **One unreadable child protects the parent.** A wrapper counts as idle only when *every*
   session child is known to be idle.
 
-#### Idle heißt nicht „null CPU"
+#### Two independent idle signals, and both must agree
 
-A session that is finished still ticks. Measured on the affected machine over a 3 minute
-window:
+The first attempt used CPU duty cycle alone, with an activity threshold of 1 % of a core,
+justified by a sample that put working sessions at 2.5–4.1 % and a heartbeat at 0.22 %.
+Re-measurement showed that justification was wrong in both directions, and the second
+error was serious.
 
-| pid | role | ΔCPU over 180 s | duty cycle |
-|---|---|---|---|
-| 1394 | session between turns | +0.40 s | 0.22 % |
-| 29624 | fresh wrapper spawn | +0.01 s | 0.006 % |
-| 86242 | session doing work | +4.56 s | 2.5 % |
-| 17890 | session doing work | +7.45 s | 4.1 % |
+Sampling every session child at 60 s intervals for 28 process-minutes:
 
-Treating *any* CPU increase as activity would therefore reset the idle clock on every
-poll for ever, and the override could never fire — the same "never clean anything"
-outcome it exists to remove. Activity is instead a rate: CPU consumed since the previous
-poll divided by the time since it, compared against a threshold of **1 % of one core**.
-That sits an order of magnitude above the measured heartbeat and an order of magnitude
-below the measured floor of real work.
+| state | duty cycle |
+|---|---|
+| at rest | 0.0000 % |
+| heartbeat, worst observed | 0.02 % |
+| lowest observed while working | 1.29 % |
 
-The rate is measured per poll, not since the last activity. Measuring it since the last
-activity would dilute a genuine wake-up by however long the process had been idle
-beforehand, so a session resuming after three hours would take hours to be recognised as
-working again. A slow trickle cannot creep past the threshold either, because a trickle's
-per-poll rate is below it by definition.
+So 1 % sat only 1.3x below the floor of real work, not the order of magnitude claimed.
+The threshold is now **0.1 %**, which is an order of magnitude below the observed working
+floor and clear of everything observed at rest. Erring low is the safe direction: a lower
+threshold makes processes look busier, and a busy process is protected.
+
+The bigger problem was that **CPU is a weak signal here at all**. A session delegates its
+work. Measured while a session ran builds continuously, sampling both the process and its
+whole subtree every 15 s:
+
+```
+t+15s 1394=0.0000%  t+60s  1394=0.0000%  t+105s 1394=0.0000%
+t+30s 1394=0.0000%  t+75s  1394=0.0000%  t+120s 1394=0.0000%
+t+45s 1394=0.0000%  t+90s  1394=0.0000%
+```
+
+PID 1394 was maximally busy throughout. Its CPU reads zero because each build ran in a
+short-lived grandchild that exited before the next sample, taking its accumulated CPU with
+it. A design resting on CPU alone would classify a flat-out session as idle.
+
+The session log does not have that weakness — it is written on every turn, whichever
+process burns the cycles. In the same measurement:
+
+| session | CPU says | log age says |
+|---|---|---|
+| 1394 (running builds) | idle | 0 s — active |
+| 49871 | idle | 1 s — active |
+| 86242 | idle | 28 s — active |
+| 44194 (finished) | idle | 559 s — idle |
+
+OpenZombr therefore reads `--log-dir` from the session child's arguments via
+`KERN_PROCARGS2` and takes the newest write in that directory. **Both signals must agree
+that the session is finished before anything is reaped.** Either one reporting recent
+activity — or being unreadable — keeps the parent protected, so a single mis-derived
+threshold cannot on its own cause a kill.
+
+One trap is worth stating explicitly: the telemetry children that *cause* the leak write
+their queue files into the same log directory. Session 44194 was finished with its process
+log 612 s old, while a `telemetry_queue….jsonl.delivered` beside it was only 559 s old.
+Counting those would let the leak keep the leaking wrapper permanently protected, exactly
+inverting the guard, so files whose names contain `telemetry` are ignored.
 
 #### Beobachtet auf der betroffenen Maschine
 
 `OpenZombr --idle-watch <Dauer> <Schwelle>` polls repeatedly and prints the
 classification without signalling anything. It exists because the override cannot be
 observed any other way: `--probe` takes a single reading and idleness needs at least two,
-while the menu bar app has the history but no textual output. A short threshold shows the
-behaviour without waiting out the two hour default.
+while the menu bar app has the history but no textual output.
 
-Run over 5 minutes with a deliberately reckless 2 minute threshold:
+Run with a deliberately reckless 2 minute threshold, before the log signal existed:
 
 ```
-pid 86183 agency — 74 Zombies, Sitzung 86242, idle unter 1 Min. → AKTIV (geschützt)
-pid 17831 agency — 36 Zombies, Sitzung 17890, idle unter 1 Min. → AKTIV (geschützt)
-pid  1332 agency — 71 Zombies, Sitzung  1394, idle 5 Min.       → INAKTIV (freigegeben)
+pid 86183 — Sitzung 86242, idle unter 1 Min. → AKTIV (geschützt)
+pid 17831 — Sitzung 17890, idle unter 1 Min. → AKTIV (geschützt)
+pid  1332 — Sitzung  1394, idle 5 Min.       → INAKTIV (freigegeben)
 ```
 
-Two wrappers whose sessions were working stayed protected throughout, one of them
-(17831) oscillating in and out as its session did sporadic work — which is exactly the
-required behaviour. The third, 1332, was **the user's own live session**, idle only
-because they were between turns, and a two minute threshold released it. Nothing was
-killed: 1332 sits far below the 100 zombie threshold.
+1332 was the user's own live session, released purely because they were between turns.
+With both signals, at the same reckless threshold:
 
-That is the whole argument for the two hour default in one run. The signal discriminates
-correctly, but only a window measured in hours separates "session finished" from "user is
-thinking".
+```
+pid 86183 — Sitzung 86242, CPU-idle 2 Min., Log-Alter unter 1 Min. → AKTIV (geschützt)
+pid  1332 — Sitzung  1394, CPU-idle 2 Min., Log-Alter unter 1 Min. → AKTIV (geschützt)
+pid 49812 — Sitzung 49871, CPU-idle 2 Min., Log-Alter unter 1 Min. → AKTIV (geschützt)
+```
+
+The log signal holds all three, including the live one that CPU alone gave up. The shipped
+default remains two hours; the point of the reckless threshold is that even it no longer
+releases a live session.
 
 ### Killing a wrapper is survivable — but that is not the safety argument
 

@@ -29,6 +29,7 @@ final class SessionIdleTests: XCTestCase {
     private func poll(
         hours: Double,
         cpuBurn: TimeInterval,
+        logIdle: TimeInterval? = nil,
         zombies: Int = 308
     ) -> (snapshot: ZombieSnapshot, policy: CleanupPolicy) {
         var entries: [ProcessEntry] = [
@@ -41,9 +42,19 @@ final class SessionIdleTests: XCTestCase {
         entries += Fixture.zombies(count: zombies, ppid: 60581, startingPID: 30_000)
 
         let enumerator = StubProcessEnumerator(entries: entries, cpu: [60640: 74.48])
+        // The log signal is sampled independently of CPU, so the stub mirrors the same
+        // story the CPU numbers tell: a burning session writes, a finished one does not.
+        // The log signal is sampled independently of CPU, so the stub tells the same story
+        // the CPU numbers tell: a session that is burning cycles is also writing logs, a
+        // finished one is doing neither. Tests that need the two signals to disagree
+        // override this.
+        let epoch = Fixture.epoch
+        let probe = LogProbeBox { _, now in
+            logIdle ?? (cpuBurn > 0 ? 0 : now.timeIntervalSince(epoch))
+        }
         let sampler = ZombieSampler(
             enumerator: enumerator, limitReader: StubLimitReader(limit: 4000),
-            currentUID: uid, currentPID: app)
+            currentUID: uid, currentPID: app, logProbe: probe)
         let tracker = IdleTracker()
 
         // One poll a minute, as the app really runs.
@@ -120,12 +131,14 @@ final class SessionIdleTests: XCTestCase {
         XCTAssertTrue(targets(result).isEmpty)
     }
 
-    /// The measured heartbeat of a session that is merely between turns — 0.40 s per 180 s,
-    /// i.e. 0.13 s per poll — must not keep the wrapper alive forever. Before activity was
+    /// The measured heartbeat of a session at rest — 0.01-0.02 % of a core — must not keep
+    /// the wrapper alive forever. Before activity was
     /// treated as a rate this reset the idle clock on every single poll, which made the
     /// override unable to ever fire.
     func testAHeartbeatingButFinishedSessionStillBecomesReapable() {
-        let result = poll(hours: 3, cpuBurn: 0.13)
+        // 0.012 s per 60 s poll = 0.02 %, the highest rate measured at rest. The session
+        // is ticking but writing nothing, which is what a finished session looks like.
+        let result = poll(hours: 3, cpuBurn: 0.012, logIdle: 3 * 3600)
         let wrapper = try! XCTUnwrap(result.snapshot.offenders.first { $0.pid == 60581 })
 
         XCTAssertEqual(try XCTUnwrap(wrapper.sessionIdleSeconds), 3 * 3600, accuracy: 120)
@@ -197,10 +210,11 @@ final class SessionIdleTests: XCTestCase {
             sessionIdleSeconds: idle)
         let foreign = Fixture.parent(
             pid: 700, zombieCount: 900, uid: 0, sessionChildCount: 1,
-            sessionChildPIDs: [701], sessionIdleSeconds: idle)
+            sessionChildPIDs: [701], sessionIdleSeconds: idle,
+            sessionLogAgeSeconds: idle)
         let launchd = Fixture.parent(
             pid: 1, zombieCount: 900, sessionChildCount: 1, sessionChildPIDs: [2],
-            sessionIdleSeconds: idle)
+            sessionIdleSeconds: idle, sessionLogAgeSeconds: idle)
 
         let snapshot = Fixture.snapshot(
             offenders: [ancestor, foreign, launchd], protectedPIDs: [1, 1332, 18826])
@@ -219,11 +233,11 @@ final class SessionIdleTests: XCTestCase {
         let idle: TimeInterval = 10 * 3600
         let tooFew = Fixture.parent(
             pid: 60581, zombieCount: 4, sessionChildCount: 1, sessionChildPIDs: [60640],
-            sessionIdleSeconds: idle)
+            sessionIdleSeconds: idle, sessionLogAgeSeconds: idle)
         let notAllowed = Fixture.parent(
             pid: 60590, name: "Safari", path: "/Applications/Safari.app/Safari",
             zombieCount: 900, sessionChildCount: 1, sessionChildPIDs: [60650],
-            sessionIdleSeconds: idle)
+            sessionIdleSeconds: idle, sessionLogAgeSeconds: idle)
 
         let snapshot = Fixture.snapshot(
             offenders: [tooFew, notAllowed], protectedPIDs: [1])
@@ -294,11 +308,12 @@ final class IdleRateTests: XCTestCase {
         var cpu: TimeInterval = 87.20
         tracker.observe(pid: 1394, startTime: start, cpuSeconds: cpu, now: now)
 
-        // 0.40 s per 180 s, the measured heartbeat of a session between turns.
+        // 0.036 s per 180 s = 0.02 %, the highest rate measured at rest across 28
+        // process-minutes of sampling.
         var idle: TimeInterval? = nil
         for _ in 0..<40 {
             now = now.addingTimeInterval(180)
-            cpu += 0.40
+            cpu += 0.036
             idle = tracker.observe(pid: 1394, startTime: start, cpuSeconds: cpu, now: now)
         }
 
@@ -332,7 +347,7 @@ final class IdleRateTests: XCTestCase {
         // to the last real activity so the sum of them stays below it too.
         for _ in 0..<100 {
             now = now.addingTimeInterval(60)
-            cpu += 0.5
+            cpu += 0.03  // 0.05 %, below the 0.1 % threshold
             tracker.observe(pid: 42, startTime: start, cpuSeconds: cpu, now: now)
         }
 
@@ -350,5 +365,91 @@ final class IdleRateTests: XCTestCase {
         now = now.addingTimeInterval(60)
         XCTAssertEqual(tracker.observe(pid: 7, startTime: start, cpuSeconds: 45, now: now), 0,
                        "sustained CPU must count as work and clear the idle clock")
+    }
+}
+
+/// The second, independent idle signal: the session's own log directory.
+final class SessionLogSignalTests: XCTestCase {
+    private let uid: uid_t = 501
+
+    private func parent(cpuIdle: TimeInterval?, logAge: TimeInterval?) -> ZombieParent {
+        Fixture.parent(
+            pid: 60581, zombieCount: 308, sessionChildCount: 1, sessionChildPIDs: [60640],
+            sessionIdleSeconds: cpuIdle, sessionLogAgeSeconds: logAge)
+    }
+
+    private func targets(_ offender: ZombieParent) -> [pid_t] {
+        ZombieReaper(currentUID: uid)
+            .selectTargets(
+                in: Fixture.snapshot(offenders: [offender], protectedPIDs: [1]),
+                policy: CleanupPolicy()
+            ).targets.map(\.pid)
+    }
+
+    /// Both signals must agree before anything is reaped, so a single mis-derived
+    /// threshold cannot cause a kill on its own.
+    func testBothSignalsMustAgreeThatTheSessionIsFinished() {
+        XCTAssertEqual(targets(parent(cpuIdle: 10 * 3600, logAge: 10 * 3600)), [60581])
+        XCTAssertTrue(targets(parent(cpuIdle: 10 * 3600, logAge: 60)).isEmpty,
+                      "recent log output must protect even when CPU looks idle")
+        XCTAssertTrue(targets(parent(cpuIdle: 0, logAge: 10 * 3600)).isEmpty,
+                      "CPU activity must protect even when the log looks stale")
+    }
+
+    /// This is the case that broke the CPU-only design: a session running builds flat out
+    /// registered 0.0000 % CPU across eight consecutive samples, because the work happened
+    /// in short-lived grandchildren. Only the log signal saw it.
+    func testASessionWhoseWorkHappensInGrandchildrenIsStillProtected() {
+        XCTAssertTrue(targets(parent(cpuIdle: 6 * 3600, logAge: 0)).isEmpty)
+    }
+
+    /// An unreadable log directory is not evidence of idleness.
+    func testAnUnknownLogAgeProtectsTheParent() {
+        XCTAssertTrue(targets(parent(cpuIdle: 10 * 3600, logAge: nil)).isEmpty)
+    }
+
+    func testLogDirectoryIsParsedInBothArgumentForms() {
+        XCTAssertEqual(
+            SessionLogProbe.logDirectory(in: ["copilot", "--log-dir", "/tmp/x", "--quiet"]),
+            "/tmp/x")
+        XCTAssertEqual(
+            SessionLogProbe.logDirectory(in: ["copilot", "--log-dir=/tmp/y"]), "/tmp/y")
+        XCTAssertNil(SessionLogProbe.logDirectory(in: ["copilot", "--log-dir"]))
+        XCTAssertNil(SessionLogProbe.logDirectory(in: ["copilot"]))
+    }
+
+    /// The telemetry children that cause the leak write into the same directory. Counting
+    /// their files would let the leak keep the leaking wrapper permanently protected.
+    /// Observed directly: session 44194 was finished, its process log 612 s old, while a
+    /// telemetry file beside it was 559 s old.
+    func testTelemetryFilesDoNotCountAsSessionActivity() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("openzombr-log-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let old = Date().addingTimeInterval(-6 * 3600)
+        let session = directory.appendingPathComponent("process-1787938136833-44194.log")
+        let telemetry = directory
+            .appendingPathComponent("telemetry_queue.44137.1787938165269.0.jsonl.delivered")
+        try Data().write(to: session)
+        try Data().write(to: telemetry)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: session.path)
+
+        let enumerator = StubProcessEnumerator(entries: [])
+        enumerator.args = [44194: ["copilot", "--log-dir", directory.path]]
+        let probe = SessionLogProbe(enumerator: enumerator)
+
+        let age = try XCTUnwrap(probe.logAgeSeconds(for: 44194, now: Date()))
+        XCTAssertEqual(age, 6 * 3600, accuracy: 60,
+                       "the fresh telemetry file must be ignored entirely")
+    }
+
+    func testNoLogDirectoryArgumentYieldsNoSignal() {
+        let enumerator = StubProcessEnumerator(entries: [])
+        enumerator.args = [42: ["some-daemon", "--verbose"]]
+        XCTAssertNil(
+            SessionLogProbe(enumerator: enumerator).logAgeSeconds(for: 42, now: Date()))
     }
 }

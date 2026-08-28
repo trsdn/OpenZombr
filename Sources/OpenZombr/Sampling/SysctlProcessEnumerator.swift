@@ -120,6 +120,54 @@ public struct SysctlProcessEnumerator: ProcessEnumerating {
         guard sysctl(&mib, 2, &value, &size, nil, 0) == 0 else { return Date() }
         return Date(timeIntervalSince1970: Double(value.tv_sec))
     }
+
+    /// Reads a process's argument vector via `KERN_PROCARGS2`.
+    ///
+    /// The buffer layout is: a 4 byte argc, the executable path, then a run of padding
+    /// NULs, then argc NUL-terminated arguments, then the environment. Only the arguments
+    /// are returned. Readable for processes of the same uid, which is the only case this
+    /// is ever called for.
+    public func arguments(for pid: pid_t) -> [String]? {
+        var argumentMax: Int = 0
+        var sizeName: [Int32] = [CTL_KERN, KERN_ARGMAX]
+        var maxSize = MemoryLayout<Int>.size
+        guard sysctl(&sizeName, 2, &argumentMax, &maxSize, nil, 0) == 0, argumentMax > 0
+        else { return nil }
+
+        var buffer = [CChar](repeating: 0, count: argumentMax)
+        var name: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = argumentMax
+        guard sysctl(&name, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size
+        else { return nil }
+
+        var argc: Int32 = 0
+        withUnsafeMutableBytes(of: &argc) { destination in
+            buffer.withUnsafeBytes { source in
+                destination.copyBytes(from: UnsafeRawBufferPointer(rebasing: source[0..<4]))
+            }
+        }
+        guard argc > 0 else { return nil }
+
+        var index = MemoryLayout<Int32>.size
+        // Skip the executable path, then the padding NULs that follow it.
+        while index < size, buffer[index] != 0 { index += 1 }
+        while index < size, buffer[index] == 0 { index += 1 }
+
+        var arguments: [String] = []
+        var current: [CChar] = []
+        while index < size, arguments.count < Int(argc) {
+            let byte = buffer[index]
+            if byte == 0 {
+                current.append(0)
+                arguments.append(String(cString: current))
+                current.removeAll(keepingCapacity: true)
+            } else {
+                current.append(byte)
+            }
+            index += 1
+        }
+        return arguments
+    }
 }
 
 /// Reads `kern.maxprocperuid` at runtime.
@@ -146,4 +194,5 @@ public struct SysctlProcessLimitReader: ProcessLimitReading {
         }
         return Int(value)
     }
+
 }

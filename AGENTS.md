@@ -79,6 +79,11 @@ must remain proven by tests:
   were between turns.
 * No idle history means "busy", and one unreadable session child protects the parent.
   Absence of evidence must never read as evidence of idleness.
+* Idleness needs two independent signals — CPU duty cycle and session log age — and both
+  must agree before a parent is reaped. CPU alone is not enough: a session delegates its
+  work to short-lived grandchildren, so one running builds flat out measured 0.0000 %
+  across eight consecutive samples. Files matching `telemetry` must stay excluded from the
+  log age, because the leak itself writes them into the session's log directory.
 * Zombies themselves are never signalled.
 * Only parents at or above the zombie threshold are targeted.
 * The denylist overrides the allowlist, and an empty allowlist matches nothing.

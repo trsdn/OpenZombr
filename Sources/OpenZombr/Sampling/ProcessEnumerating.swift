@@ -16,6 +16,12 @@ public protocol ProcessEnumerating: Sendable {
     /// handful of live session children belonging to offending parents, never for the
     /// whole table, because it is one syscall per pid.
     func cpuSeconds(for pid: pid_t) -> TimeInterval?
+    /// Command line arguments for a pid, or `nil` when they cannot be read.
+    ///
+    /// Needed to recover the `--log-dir` a session was started with, which is the only
+    /// signal that reliably reflects session activity. Like `cpuSeconds`, only called for
+    /// candidate session children.
+    func arguments(for pid: pid_t) -> [String]?
 }
 
 /// Reads `kern.maxprocperuid`.

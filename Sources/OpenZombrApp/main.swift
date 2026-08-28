@@ -32,7 +32,9 @@ if CommandLine.arguments.contains("--idle-watch") {
                 print(
                     "  pid \(offender.pid) \(offender.name) — \(offender.zombieCount) Zombies, "
                         + "Sitzung \(offender.sessionChildPIDs.map(String.init).joined(separator: ",")), "
-                        + "idle " + (idle.map(Formatting.duration) ?? "unbekannt")
+                        + "CPU-idle " + (idle.map(Formatting.duration) ?? "unbekannt")
+                        + ", Log-Alter "
+                        + (offender.sessionLogAgeSeconds.map(Formatting.duration) ?? "unbekannt")
                         + " → " + (active ? "AKTIV (geschützt)" : "INAKTIV (freigegeben)"))
             }
         } catch {

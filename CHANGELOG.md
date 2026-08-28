@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard would have protected all six wrappers reaped during the incident, since each had a
   live `copilot` child that was resident but finished. Idleness is measured from
   accumulated CPU time deltas across polls, converted through the mach timebase.
+- Session log age as a second, independent idle signal, read from the `--log-dir` argument
+  via `KERN_PROCARGS2`. Both signals must agree that a session is finished before its
+  parent can be reaped. CPU alone proved unreliable: a session running builds continuously
+  measured 0.0000 % duty cycle across eight consecutive samples, because its work happened
+  in short-lived grandchildren. Files whose names contain `telemetry` are excluded, since
+  the leaking children write into the same directory.
+- Activity threshold re-derived from measurement, from 1 % to 0.1 % of a core. The earlier
+  value sat only 1.3x below the measured floor of real work rather than the order of
+  magnitude intended.
 - Candidate ordering is now idle-first: a parent with no live session is considered before
   one whose session is stale, which is considered before an active one.
 - `liveChildCount` and `sessionChildCount` per offending parent, shown in `--probe`, and

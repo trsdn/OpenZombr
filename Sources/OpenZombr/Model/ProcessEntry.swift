@@ -78,6 +78,18 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
     /// `nil` means "no evidence", which is read as active. A wrapper is only idle if
     /// every one of its session children is idle, hence the minimum.
     public let sessionIdleSeconds: TimeInterval?
+    /// Age of the most recently written file in the session's `--log-dir`, or `nil` when
+    /// there is no log directory or it cannot be read.
+    ///
+    /// This is the second, independent idle signal, and it is the stronger of the two.
+    /// CPU time turned out to be a poor proxy for session activity because a session
+    /// delegates its work: measured on the affected machine, a session running builds
+    /// flat out registered 0.0000 % CPU across eight consecutive samples, because the
+    /// build ran in short-lived grandchildren whose CPU vanished with them. The session
+    /// log, by contrast, is written on every turn regardless of who burns the cycles. In
+    /// the same measurement it read an age of 0 s for that session and 559 s for a
+    /// finished one.
+    public let sessionLogAgeSeconds: TimeInterval?
 
     /// True when the parent still has a live child that is not one of its own
     /// short-lived self-spawns, i.e. it is plausibly hosting real work.
@@ -90,10 +102,21 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
     /// that simply has not exited. That describes every wrapper reaped during the
     /// incident, so without this the guard would protect exactly the processes that need
     /// reaping.
+    /// Both signals must agree that the session is finished. Either one reporting recent
+    /// activity — or being unreadable — keeps the parent protected, so a single
+    /// mis-derived threshold cannot on its own cause a kill.
     public func isSessionActive(idleThreshold: TimeInterval) -> Bool {
         guard hasActiveSession else { return false }
-        guard let idle = sessionIdleSeconds else { return true }
-        return idle < idleThreshold
+
+        let cpuSaysActive: Bool = {
+            guard let idle = sessionIdleSeconds else { return true }
+            return idle < idleThreshold
+        }()
+        let logSaysActive: Bool = {
+            guard let age = sessionLogAgeSeconds else { return true }
+            return age < idleThreshold
+        }()
+        return cpuSaysActive || logSaysActive
     }
 
     public var id: pid_t { pid }
@@ -109,7 +132,8 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
         liveChildCount: Int = 0,
         sessionChildCount: Int = 0,
         sessionChildPIDs: [pid_t] = [],
-        sessionIdleSeconds: TimeInterval? = nil
+        sessionIdleSeconds: TimeInterval? = nil,
+        sessionLogAgeSeconds: TimeInterval? = nil
     ) {
         self.pid = pid
         self.uid = uid
@@ -122,15 +146,19 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
         self.sessionChildCount = max(0, sessionChildCount)
         self.sessionChildPIDs = sessionChildPIDs
         self.sessionIdleSeconds = sessionIdleSeconds
+        self.sessionLogAgeSeconds = sessionLogAgeSeconds
     }
 
     /// Copy with idle information filled in, once CPU time has been sampled.
-    public func withSessionIdle(_ seconds: TimeInterval?) -> ZombieParent {
+    public func withSessionIdle(
+        _ seconds: TimeInterval?, logAge: TimeInterval? = nil
+    ) -> ZombieParent {
         ZombieParent(
             pid: pid, uid: uid, name: name, executablePath: executablePath,
             zombieCount: zombieCount, startTime: startTime, parentIsZombie: parentIsZombie,
             liveChildCount: liveChildCount, sessionChildCount: sessionChildCount,
-            sessionChildPIDs: sessionChildPIDs, sessionIdleSeconds: seconds)
+            sessionChildPIDs: sessionChildPIDs, sessionIdleSeconds: seconds,
+            sessionLogAgeSeconds: logAge)
     }
 
     public func age(now: Date = Date()) -> TimeInterval {

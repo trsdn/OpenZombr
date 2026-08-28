@@ -69,6 +69,7 @@ public struct ZombieSampler: Sendable {
     private let limitReader: ProcessLimitReading
     private let currentUID: uid_t
     private let currentPID: pid_t
+    private let logProbe: SessionLogProbing
     /// Resolving executable paths costs one syscall each, so it is limited to the
     /// parents that could plausibly be targeted.
     private let pathResolutionLimit: Int
@@ -78,8 +79,10 @@ public struct ZombieSampler: Sendable {
         limitReader: ProcessLimitReading = SysctlProcessLimitReader(),
         currentUID: uid_t = getuid(),
         currentPID: pid_t = getpid(),
-        pathResolutionLimit: Int = 20
+        pathResolutionLimit: Int = 20,
+        logProbe: SessionLogProbing? = nil
     ) {
+        self.logProbe = logProbe ?? SessionLogProbe(enumerator: enumerator)
         self.enumerator = enumerator
         self.limitReader = limitReader
         self.currentUID = currentUID
@@ -119,6 +122,10 @@ public struct ZombieSampler: Sendable {
             }
             var minimumIdle: TimeInterval?
             var sawUnknown = false
+            // The log age is taken as the *newest* write across the session children: any
+            // one of them showing recent output means the session is alive.
+            var newestLogAge: TimeInterval?
+            var sawUnknownLog = false
             for child in offender.sessionChildPIDs {
                 guard let entry = byPID[child], let cpu = enumerator.cpuSeconds(for: child) else {
                     sawUnknown = true
@@ -133,9 +140,19 @@ public struct ZombieSampler: Sendable {
                 }
                 minimumIdle = min(minimumIdle ?? idle, idle)
             }
+            for child in offender.sessionChildPIDs {
+                guard let age = logProbe.logAgeSeconds(for: child, now: now) else {
+                    sawUnknownLog = true
+                    continue
+                }
+                newestLogAge = min(newestLogAge ?? age, age)
+            }
             // A wrapper counts as idle only when *every* session child is known to be
             // idle. One unreadable child is enough to keep the parent protected.
-            updated.append(offender.withSessionIdle(sawUnknown ? nil : minimumIdle))
+            updated.append(
+                offender.withSessionIdle(
+                    sawUnknown ? nil : minimumIdle,
+                    logAge: sawUnknownLog ? nil : newestLogAge))
         }
 
         tracker.prune(keeping: Set(entries.map(\.pid)))
