@@ -1,0 +1,162 @@
+import Foundation
+
+/// One poll: how many process-table slots the current uid holds, how many of those are
+/// zombies, what the limit is, and who is leaking.
+public struct ZombieSnapshot: Sendable, Equatable {
+    public let timestamp: Date
+    public let uid: uid_t
+    /// Processes owned by `uid`, zombies included — zombies occupy slots and count
+    /// against `kern.maxprocperuid` just like live processes do.
+    public let totalProcesses: Int
+    public let zombieCount: Int
+    /// `kern.maxprocperuid`, read at runtime.
+    public let limit: Int
+    /// Parents owning at least one zombie, sorted by zombie count descending.
+    public let offenders: [ZombieParent]
+    /// PIDs that must never be signalled: this process and every ancestor of it.
+    public let protectedPIDs: Set<pid_t>
+
+    public init(
+        timestamp: Date,
+        uid: uid_t,
+        totalProcesses: Int,
+        zombieCount: Int,
+        limit: Int,
+        offenders: [ZombieParent],
+        protectedPIDs: Set<pid_t> = []
+    ) {
+        self.timestamp = timestamp
+        self.uid = uid
+        self.totalProcesses = totalProcesses
+        self.zombieCount = zombieCount
+        self.limit = limit
+        self.offenders = offenders
+        self.protectedPIDs = protectedPIDs
+    }
+
+    /// Share of the per-uid limit currently in use. This, not the raw zombie count, is
+    /// what determines severity: `fork()` fails at the limit regardless of how the slots
+    /// are split between live processes and zombies.
+    public var usageFraction: Double {
+        guard limit > 0 else { return 0 }
+        return Double(totalProcesses) / Double(limit)
+    }
+
+    public var freeSlots: Int {
+        max(0, limit - totalProcesses)
+    }
+
+    public var liveProcesses: Int {
+        max(0, totalProcesses - zombieCount)
+    }
+
+    /// Share of the limit occupied by zombies alone — the part that is pure waste.
+    public var zombieFraction: Double {
+        guard limit > 0 else { return 0 }
+        return Double(zombieCount) / Double(limit)
+    }
+
+    public var topOffender: ZombieParent? { offenders.first }
+
+    public func severity(thresholds: Thresholds) -> Severity {
+        thresholds.severity(forUsageFraction: usageFraction)
+    }
+}
+
+/// Turns a raw process table into a `ZombieSnapshot`.
+public struct ZombieSampler: Sendable {
+    private let enumerator: ProcessEnumerating
+    private let limitReader: ProcessLimitReading
+    private let currentUID: uid_t
+    private let currentPID: pid_t
+    /// Resolving executable paths costs one syscall each, so it is limited to the
+    /// parents that could plausibly be targeted.
+    private let pathResolutionLimit: Int
+
+    public init(
+        enumerator: ProcessEnumerating = SysctlProcessEnumerator(),
+        limitReader: ProcessLimitReading = SysctlProcessLimitReader(),
+        currentUID: uid_t = getuid(),
+        currentPID: pid_t = getpid(),
+        pathResolutionLimit: Int = 20
+    ) {
+        self.enumerator = enumerator
+        self.limitReader = limitReader
+        self.currentUID = currentUID
+        self.currentPID = currentPID
+        self.pathResolutionLimit = max(0, pathResolutionLimit)
+    }
+
+    public func sample(now: Date = Date()) throws -> ZombieSnapshot {
+        let entries = try enumerator.enumerateProcesses()
+        let limit = try limitReader.maximumProcessesPerUID()
+        return snapshot(from: entries, limit: limit, now: now)
+    }
+
+    /// Pure transformation, exposed so tests can pin the aggregation rules.
+    public func snapshot(from entries: [ProcessEntry], limit: Int, now: Date) -> ZombieSnapshot {
+        let byPID = Dictionary(entries.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+        let mine = entries.filter { $0.uid == currentUID }
+        let zombies = mine.filter(\.isZombie)
+
+        var counts: [pid_t: Int] = [:]
+        for zombie in zombies {
+            counts[zombie.ppid, default: 0] += 1
+        }
+
+        var offenders: [ZombieParent] = []
+        offenders.reserveCapacity(counts.count)
+        for (pid, count) in counts {
+            let parent: ProcessEntry? = byPID[pid]
+            let name: String = parent?.name ?? "unbekannt"
+            let ownerUID: uid_t = parent?.uid ?? currentUID
+            let started: Date = parent?.startTime ?? now
+            let parentIsZombie: Bool = parent?.isZombie ?? false
+            offenders.append(
+                ZombieParent(
+                    pid: pid,
+                    uid: ownerUID,
+                    name: name,
+                    executablePath: nil,
+                    zombieCount: count,
+                    startTime: started,
+                    parentIsZombie: parentIsZombie
+                )
+            )
+        }
+        // Deterministic order: zombie count first, then pid, so the menu does not
+        // reshuffle rows that are tied.
+        offenders.sort {
+            $0.zombieCount == $1.zombieCount ? $0.pid < $1.pid : $0.zombieCount > $1.zombieCount
+        }
+
+        offenders = resolvePaths(for: offenders)
+
+        return ZombieSnapshot(
+            timestamp: now,
+            uid: currentUID,
+            totalProcesses: mine.count,
+            zombieCount: zombies.count,
+            limit: limit,
+            offenders: offenders,
+            protectedPIDs: ProcessProtection.protectedPIDs(of: currentPID, in: entries)
+        )
+    }
+
+    private func resolvePaths(for offenders: [ZombieParent]) -> [ZombieParent] {
+        offenders.enumerated().map { index, offender in
+            guard index < pathResolutionLimit,
+                let path = enumerator.executablePath(for: offender.pid)
+            else { return offender }
+            return ZombieParent(
+                pid: offender.pid,
+                uid: offender.uid,
+                name: offender.name,
+                executablePath: path,
+                zombieCount: offender.zombieCount,
+                startTime: offender.startTime,
+                parentIsZombie: offender.parentIsZombie
+            )
+        }
+    }
+}
