@@ -155,11 +155,27 @@ public struct ZombieReaper: Sendable {
     /// The order of the checks matters: the unconditional protections (PID 1, ownership,
     /// own ancestry) are applied before the tunable ones (policy, threshold), so no
     /// preference value can ever unlock them.
+    ///
+    /// Candidates are considered in "idle first" order — a parent with no live session
+    /// child before one that still has work attached, and only then by zombie count.
+    /// Ancestry alone is not enough here: when the app is started by launchd at login,
+    /// its ancestor set is just `{self, 1}` and protects nothing of the user's session
+    /// tree, so liveness has to carry the weight instead.
     public func selectTargets(in snapshot: ZombieSnapshot, policy: CleanupPolicy) -> Selection {
         var targets: [ZombieParent] = []
         var skipped: [SkippedParent] = []
 
-        for parent in snapshot.offenders {
+        let ordered = snapshot.offenders.sorted { lhs, rhs in
+            if lhs.hasActiveSession != rhs.hasActiveSession {
+                return !lhs.hasActiveSession
+            }
+            if lhs.zombieCount != rhs.zombieCount {
+                return lhs.zombieCount > rhs.zombieCount
+            }
+            return lhs.pid < rhs.pid
+        }
+
+        for parent in ordered {
             if parent.pid <= 1 {
                 skipped.append(SkippedParent(parent: parent, reason: .initProcess))
                 continue
@@ -174,6 +190,10 @@ public struct ZombieReaper: Sendable {
             }
             if parent.parentIsZombie {
                 skipped.append(SkippedParent(parent: parent, reason: .parentIsZombie))
+                continue
+            }
+            if policy.spareParentsWithActiveSession && parent.hasActiveSession {
+                skipped.append(SkippedParent(parent: parent, reason: .hasActiveSession))
                 continue
             }
             if !policy.permits(parent) {

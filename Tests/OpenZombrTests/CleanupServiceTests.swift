@@ -113,8 +113,12 @@ final class CleanupServiceTests: XCTestCase {
         XCTAssertEqual(report.skipped.first?.reason, .belowZombieThreshold)
     }
 
-    /// The whole reason auto-cleanup is safe: the wrapper's live child is not touched,
-    /// and survives as an orphan reparented to launchd.
+    /// The whole reason auto-cleanup is safe *when it is allowed to act*: the wrapper's
+    /// live child is not touched, and survives as an orphan reparented to launchd.
+    ///
+    /// This wrapper hosts a session, so the default policy spares it entirely. Reaching
+    /// it at all requires deliberately disabling that guard, which is the documented
+    /// decision the survivability of the child is supposed to justify.
     func testLiveChildrenOfATargetAreNeverSignalled() {
         var entries: [ProcessEntry] = [
             Fixture.process(pid: 1, ppid: 0, name: "launchd"),
@@ -124,11 +128,22 @@ final class CleanupServiceTests: XCTestCase {
         ]
         entries += Fixture.zombies(count: 600, ppid: 600, startingPID: 10_000)
 
+        let spared = FakeSignaller(alive: [600, 601], lethalSignal: [600: SIGKILL])
+        let (guarded, guardedSnapshot) = makeService(
+            beforeEntries: entries, afterEntries: cleanedTable, signaller: spared)
+        let guardedReport = guarded.run(on: guardedSnapshot, policy: policy, now: Fixture.epoch)
+        XCTAssertTrue(
+            spared.deliveries.isEmpty, "by default a wrapper with a live session is untouched")
+        XCTAssertEqual(guardedReport.skipped.first?.reason, .hasActiveSession)
+
+        var permissive = policy
+        permissive.spareParentsWithActiveSession = false
+
         let signaller = FakeSignaller(alive: [600, 601], lethalSignal: [600: SIGKILL])
         let (service, snapshot) = makeService(
             beforeEntries: entries, afterEntries: cleanedTable, signaller: signaller)
 
-        _ = service.run(on: snapshot, policy: policy, now: Fixture.epoch)
+        _ = service.run(on: snapshot, policy: permissive, now: Fixture.epoch)
 
         XCTAssertEqual(signaller.signalledPIDs, [600])
         XCTAssertTrue(signaller.isAlive(pid: 601))

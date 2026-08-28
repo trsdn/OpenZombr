@@ -25,6 +25,9 @@ if CommandLine.arguments.contains("--probe") {
                 print(
                     "  pid \(offender.pid) \(offender.name) — \(offender.zombieCount) Zombies, "
                         + Formatting.age(offender.age())
+                        + ", \(offender.liveChildCount) lebende Kinder"
+                        + (offender.hasActiveSession
+                            ? " (aktive Sitzung: \(offender.sessionChildCount))" : " (keine aktive Sitzung)")
                         + " — \(offender.executablePath ?? "Pfad unbekannt")")
             }
         }
@@ -34,6 +37,9 @@ if CommandLine.arguments.contains("--probe") {
         print(
             "geschützte PIDs (eigener Prozess + Vorfahren): "
                 + snapshot.protectedPIDs.sorted().map(String.init).joined(separator: ", "))
+        for skip in selection.skipped where skip.reason == .hasActiveSession {
+            print("  \(skip.parent.pid) \(skip.parent.name) verschont: \(skip.reason.germanDescription)")
+        }
         print(
             "Bereinigungs-Kandidaten: "
                 + (selection.targets.isEmpty

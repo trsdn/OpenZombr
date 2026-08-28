@@ -47,7 +47,9 @@ enum Fixture {
         path: String? = "/Users/x/.config/agency/CurrentVersion/agency",
         zombieCount: Int,
         uid: uid_t = Fixture.uid,
-        parentIsZombie: Bool = false
+        parentIsZombie: Bool = false,
+        liveChildCount: Int = 0,
+        sessionChildCount: Int = 0
     ) -> ZombieParent {
         ZombieParent(
             pid: pid,
@@ -56,7 +58,9 @@ enum Fixture {
             executablePath: path,
             zombieCount: zombieCount,
             startTime: epoch.addingTimeInterval(-3600),
-            parentIsZombie: parentIsZombie
+            parentIsZombie: parentIsZombie,
+            liveChildCount: liveChildCount,
+            sessionChildCount: sessionChildCount
         )
     }
 

@@ -24,19 +24,34 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// Upper bound on how many parents a single cleanup run may signal, so a
     /// misconfigured allowlist cannot cascade across the machine.
     public var maximumTargetsPerRun: Int
+    /// When true, a parent that still has a live child running a different executable is
+    /// never signalled, however many zombies it owns.
+    ///
+    /// This is the guard that survives launch-at-login. Ancestor protection only works
+    /// while the app is a descendant of the process it must not kill; started by launchd
+    /// the ancestor set collapses to `{self, 1}` and protects nothing of the user's
+    /// session tree. Liveness is independent of how the app itself was started.
+    ///
+    /// Disabling it is survivable but should be a deliberate choice: killing an `agency`
+    /// wrapper was measured to leave its live `copilot` child running, reparented to
+    /// launchd. It is off the default path all the same, because "the damage happened to
+    /// be recoverable" is not a safety argument.
+    public var spareParentsWithActiveSession: Bool
 
     public init(
         minimumZombiesPerParent: Int = CleanupPolicy.defaultMinimumZombies,
         allowedNamePatterns: [String] = CleanupPolicy.defaultAllowedPatterns,
         deniedNamePatterns: [String] = [],
         terminationGracePeriod: TimeInterval = 2,
-        maximumTargetsPerRun: Int = 10
+        maximumTargetsPerRun: Int = 10,
+        spareParentsWithActiveSession: Bool = true
     ) {
         self.minimumZombiesPerParent = max(1, minimumZombiesPerParent)
         self.allowedNamePatterns = allowedNamePatterns.filter { !$0.isEmpty }
         self.deniedNamePatterns = deniedNamePatterns.filter { !$0.isEmpty }
         self.terminationGracePeriod = max(0, terminationGracePeriod)
         self.maximumTargetsPerRun = max(1, maximumTargetsPerRun)
+        self.spareParentsWithActiveSession = spareParentsWithActiveSession
     }
 
     /// Substring matching, not regex: the patterns are typed by a user into a
@@ -62,6 +77,7 @@ public enum SkipReason: String, Sendable, Equatable {
     case notPermittedByPolicy
     case parentIsZombie
     case runLimitReached
+    case hasActiveSession
 
     public var germanDescription: String {
         switch self {
@@ -72,6 +88,7 @@ public enum SkipReason: String, Sendable, Equatable {
         case .notPermittedByPolicy: return "nicht in der Erlaubnisliste"
         case .parentIsZombie: return "Elternprozess ist selbst ein Zombie"
         case .runLimitReached: return "Limit pro Durchlauf erreicht"
+        case .hasActiveSession: return "hat noch eine aktive Sitzung"
         }
     }
 }

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Liveness-based protection: a parent that still has a live child running a *different*
+  executable is never signalled. Ancestor protection only applies while the app is a
+  descendant of the process in question, so under `launchd` — the launch-at-login case —
+  the ancestor set collapses to `{self, 1}` and protects nothing. Liveness does not depend
+  on how the app itself was started. Toggleable in preferences, on by default.
+- Candidate ordering is now idle-first: a parent with no live session is always considered
+  before one that has work attached, regardless of zombie counts.
+- `liveChildCount` and `sessionChildCount` per offending parent, shown in `--probe`, and
+  a `hat noch eine aktive Sitzung` skip reason so a spared process is always explainable.
+
+### Fixed
+
+- The menu bar showed only the severity glyph and dropped the count: `MenuBarExtra`
+  renders a `Label` icon-only, so the figure has to be an explicit `HStack`.
+
 ## [0.1.0] - 2026-08-28
 
 ### Added

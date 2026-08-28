@@ -53,6 +53,15 @@ public struct PreferencesView: View {
 
             Section("Automatische Bereinigung") {
                 Toggle("Automatisch aufräumen", isOn: $preferences.autoCleanupEnabled)
+                Toggle(
+                    "Prozesse mit aktiver Sitzung verschonen",
+                    isOn: $preferences.spareActiveSessions)
+                Text(
+                    "Beendet nie einen Prozess, der noch ein lebendes Kind eines anderen "
+                        + "Programms hat. Diese Regel schützt die laufende Sitzung auch dann, "
+                        + "wenn OpenZombr beim Anmelden von launchd gestartet wurde.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 LabeledContent("Ab Zombies pro Elternprozess") {
                     TextField(
                         "", value: $preferences.minimumZombiesPerParent,

@@ -12,6 +12,7 @@ public final class Preferences: ObservableObject {
         public static let allowedPatterns = "allowedNamePatterns"
         public static let deniedPatterns = "deniedNamePatterns"
         public static let notificationsEnabled = "notificationsEnabled"
+        public static let spareActiveSessions = "spareActiveSessions"
     }
 
     public static let defaultPollInterval: TimeInterval = 60
@@ -85,6 +86,13 @@ public final class Preferences: ObservableObject {
         didSet { defaults.set(deniedPatternsText, forKey: Key.deniedPatterns) }
     }
 
+    /// Never signal a wrapper that still has a live child of a different executable.
+    /// This is the guard that keeps working when the app is started by launchd, where
+    /// ancestor protection collapses to `{self, 1}` and protects nothing.
+    @Published public var spareActiveSessions: Bool {
+        didSet { defaults.set(spareActiveSessions, forKey: Key.spareActiveSessions) }
+    }
+
     @Published public var notificationsEnabled: Bool {
         didSet { defaults.set(notificationsEnabled, forKey: Key.notificationsEnabled) }
     }
@@ -110,6 +118,8 @@ public final class Preferences: ObservableObject {
         self.deniedPatternsText = defaults.string(forKey: Key.deniedPatterns) ?? ""
         self.notificationsEnabled =
             defaults.object(forKey: Key.notificationsEnabled) as? Bool ?? true
+        self.spareActiveSessions =
+            defaults.object(forKey: Key.spareActiveSessions) as? Bool ?? true
     }
 
     public var thresholds: Thresholds {
@@ -123,7 +133,8 @@ public final class Preferences: ObservableObject {
         CleanupPolicy(
             minimumZombiesPerParent: minimumZombiesPerParent,
             allowedNamePatterns: Self.patterns(from: allowedPatternsText),
-            deniedNamePatterns: Self.patterns(from: deniedPatternsText)
+            deniedNamePatterns: Self.patterns(from: deniedPatternsText),
+            spareParentsWithActiveSession: spareActiveSessions
         )
     }
 

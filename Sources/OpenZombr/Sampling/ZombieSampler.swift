@@ -104,6 +104,20 @@ public struct ZombieSampler: Sendable {
             counts[zombie.ppid, default: 0] += 1
         }
 
+        // Live children per parent, split into self-spawns (same executable name as the
+        // parent) and everything else. Built in one pass over the whole table.
+        var liveChildren: [pid_t: Int] = [:]
+        var sessionChildren: [pid_t: Int] = [:]
+        for entry in entries where !entry.isZombie {
+            let parentPID: pid_t = entry.ppid
+            guard counts[parentPID] != nil else { continue }
+            liveChildren[parentPID, default: 0] += 1
+            let parentName: String = byPID[parentPID]?.name ?? ""
+            if entry.name != parentName {
+                sessionChildren[parentPID, default: 0] += 1
+            }
+        }
+
         var offenders: [ZombieParent] = []
         offenders.reserveCapacity(counts.count)
         for (pid, count) in counts {
@@ -112,6 +126,8 @@ public struct ZombieSampler: Sendable {
             let ownerUID: uid_t = parent?.uid ?? currentUID
             let started: Date = parent?.startTime ?? now
             let parentIsZombie: Bool = parent?.isZombie ?? false
+            let live: Int = liveChildren[pid] ?? 0
+            let session: Int = sessionChildren[pid] ?? 0
             offenders.append(
                 ZombieParent(
                     pid: pid,
@@ -120,7 +136,9 @@ public struct ZombieSampler: Sendable {
                     executablePath: nil,
                     zombieCount: count,
                     startTime: started,
-                    parentIsZombie: parentIsZombie
+                    parentIsZombie: parentIsZombie,
+                    liveChildCount: live,
+                    sessionChildCount: session
                 )
             )
         }
@@ -155,7 +173,9 @@ public struct ZombieSampler: Sendable {
                 executablePath: path,
                 zombieCount: offender.zombieCount,
                 startTime: offender.startTime,
-                parentIsZombie: offender.parentIsZombie
+                parentIsZombie: offender.parentIsZombie,
+                liveChildCount: offender.liveChildCount,
+                sessionChildCount: offender.sessionChildCount
             )
         }
     }

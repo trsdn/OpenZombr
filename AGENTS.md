@@ -64,6 +64,13 @@ must remain proven by tests:
 * PID 1 and PID 0 are never targeted, at both the selection and signal-sending layers.
 * The app's own process and every ancestor are protected, computed dynamically, even when
   an ancestor is the single worst offender.
+* Ancestry is **recomputed from the live process table on every poll**, never captured at
+  startup, so a process that stops being an ancestor stops being protected.
+* Ancestry alone is insufficient and must never be the only guard: started by `launchd` at
+  login the ancestor set is `{self, 1}`. A parent that still has a live child running a
+  different executable is protected independently of ancestry. Note that "has live
+  children" on its own does **not** discriminate — the leak itself is a stream of live
+  children — so the check must exclude the parent's own self-spawns.
 * Zombies themselves are never signalled.
 * Only parents at or above the zombie threshold are targeted.
 * The denylist overrides the allowlist, and an empty allowlist matches nothing.

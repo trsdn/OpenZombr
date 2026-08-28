@@ -99,6 +99,8 @@ These are the rules that matter most, and each one is covered by a unit test:
   87537 was an `agency` wrapper holding ~600 zombies — a perfect target by every other
   rule. Killing it would have severed the user's active session.
 * **Never a zombie.** Only parents above the zombie threshold are ever considered.
+* **Never a process that still hosts an active session.** See below — this is the rule
+  that keeps working once the app is launched at login.
 * **SIGTERM before SIGKILL.** The known offender ignores SIGTERM, so escalation is
   required — but SIGTERM is still attempted first, escalation happens only after a grace
   period, and which signal actually worked is recorded.
@@ -106,6 +108,68 @@ These are the rules that matter most, and each one is covered by a unit test:
   Matching is plain case-insensitive substring, not regex, because a malformed regex
   silently matching everything would be a catastrophic failure mode for something that
   sends SIGKILL. An empty allowlist matches *nothing*: the policy is fail-closed.
+
+### Why ancestry is not enough
+
+Ancestor protection only works while OpenZombr is a *descendant* of the process it must
+not kill. That holds when the app is started from a terminal inside a session, and it is
+what caught the near-miss above. It does not hold in the deployment that matters:
+
+Started at login by `launchd`, the app's parent is PID 1. Its ancestor set is therefore
+just `{self, 1}` and protects **nothing** of the user's session tree — and `agency`
+wrappers are exactly what the default allowlist targets. Ancestry silently stops
+protecting anything at precisely the moment the app becomes a background daemon.
+
+This was verified directly, by running the same binary two ways:
+
+| How the process was started | Protected set |
+| --- | --- |
+| child of a shell inside a session | `{1, 1332, 1394, 4264, 22292, 22296}` |
+| orphaned to `ppid = 1`, as under launchd | `{1, 22308}` |
+
+(The set is recomputed from the live process table on every poll, so it can never go
+stale — a former ancestor drops out as soon as it stops being one. That is what the two
+different results above demonstrate.)
+
+### The liveness guard
+
+The guard that does survive launch-at-login is based on what the wrapper is *doing*, not
+on how the app itself was started. The naive form of this does not work, and it is worth
+saying why: **every** leaking wrapper has live children, because the leak *is* a stream of
+short-lived children. Measured on the affected machine, all four wrappers looked identical
+by that measure:
+
+```
+pid 86183 agency — 49 zombies, 2 live children
+pid  1332 agency — 47 zombies, 2 live children   ← hosting the user's live session
+pid 17831 agency — 11 zombies, 2 live children
+```
+
+The signal that *does* discriminate is a live child running a **different executable**.
+The telemetry children `agency` spawns are themselves called `agency`; a wrapper doing
+real work additionally has a `copilot` child, which is not a self-spawn. So OpenZombr
+counts live children whose executable differs from the parent's, and:
+
+* never signals a parent with such a child (default, toggleable in preferences), and
+* orders candidates idle-first, so a wrapper with no session is always reaped before one
+  that has work attached, regardless of zombie counts.
+
+The honest consequence: on a machine where every wrapper is hosting a session, OpenZombr
+will report *"Bereinigungs-Kandidaten: keine"* and clean nothing, rather than guess. In
+the actual incident several of the six wrappers were left over from closed sessions and
+would have had no session child at all.
+
+### Killing a wrapper is survivable — but that is not the safety argument
+
+Empirically verified during the incident: when an `agency` wrapper is SIGKILLed, its live
+`copilot` child **survives**. It is simply orphaned, reparented to `launchd`, and keeps
+running. Killing six wrappers took the machine from 3892 → 565 processes and 3350 → 29
+zombies without terminating a single live session child.
+
+This is why the "spare active sessions" toggle exists and can be turned off without
+disaster. It is deliberately **not** the default, because *"the damage happened to be
+recoverable"* is not a safety argument — it is a mitigation. The default is to leave a
+working process alone and tell the user why.
 
 ## Build and install
 

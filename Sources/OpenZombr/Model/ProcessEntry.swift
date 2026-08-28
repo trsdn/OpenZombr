@@ -56,6 +56,24 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
     /// A parent can itself be a zombie. Signalling it is pointless, so this is tracked
     /// and used as a skip reason.
     public let parentIsZombie: Bool
+    /// Live (non-zombie) children of this parent.
+    ///
+    /// On its own this does *not* distinguish a leaking wrapper from one hosting real
+    /// work: measured on the affected machine, every `agency` wrapper had live children,
+    /// because the leak itself is a stream of short-lived children.
+    public let liveChildCount: Int
+    /// Live children running a *different* executable than the parent.
+    ///
+    /// This is the signal that actually discriminates. The leak is `agency` spawning
+    /// `agency` telemetry children, so those self-spawns share the parent's name. A
+    /// wrapper that is hosting real work additionally has a `copilot` child, which does
+    /// not. Measured: wrapper 1332 held 41 zombies and dozens of `agency` self-spawns
+    /// while hosting the user's live session as a single `copilot` child.
+    public let sessionChildCount: Int
+
+    /// True when the parent still has a live child that is not one of its own
+    /// short-lived self-spawns, i.e. it is plausibly hosting real work.
+    public var hasActiveSession: Bool { sessionChildCount > 0 }
 
     public var id: pid_t { pid }
 
@@ -66,7 +84,9 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
         executablePath: String? = nil,
         zombieCount: Int,
         startTime: Date,
-        parentIsZombie: Bool = false
+        parentIsZombie: Bool = false,
+        liveChildCount: Int = 0,
+        sessionChildCount: Int = 0
     ) {
         self.pid = pid
         self.uid = uid
@@ -75,6 +95,8 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
         self.zombieCount = zombieCount
         self.startTime = startTime
         self.parentIsZombie = parentIsZombie
+        self.liveChildCount = max(0, liveChildCount)
+        self.sessionChildCount = max(0, sessionChildCount)
     }
 
     public func age(now: Date = Date()) -> TimeInterval {
