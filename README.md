@@ -10,31 +10,6 @@ documentation in English.
 ---
 
 
-#### Idle heißt nicht „null CPU"
-
-A session that is finished still ticks. Measured on the affected machine over a 3 minute
-window:
-
-| pid | role | ΔCPU over 180 s | duty cycle |
-|---|---|---|---|
-| 1394 | session between turns | +0.40 s | 0.22 % |
-| 29624 | fresh wrapper spawn | +0.01 s | 0.006 % |
-| 86242 | session doing work | +4.56 s | 2.5 % |
-| 17890 | session doing work | +7.45 s | 4.1 % |
-
-Treating *any* CPU increase as activity would therefore reset the idle clock on every
-poll for ever, and the override could never fire — the same "never clean anything"
-outcome it exists to remove. Activity is instead a rate: CPU consumed since the previous
-poll divided by the time since it, compared against a threshold of **1 % of one core**.
-That sits an order of magnitude above the measured heartbeat and an order of magnitude
-below the measured floor of real work.
-
-The rate is measured per poll, not since the last activity. Measuring it since the last
-activity would dilute a genuine wake-up by however long the process had been idle
-beforehand, so a session resuming after three hours would take hours to be recognised as
-working again. A slow trickle cannot creep past the threshold either, because a trickle's
-per-poll rate is below it by definition.
-
 ## The incident this was built for
 
 Machine: Mac mini M4 Pro (`Mac16,11`), 24 GB, macOS 26.6.2.
@@ -229,6 +204,31 @@ Two deliberate conservative choices:
   idle override. That is correct: at that point the app genuinely does not know.
 * **One unreadable child protects the parent.** A wrapper counts as idle only when *every*
   session child is known to be idle.
+
+#### Idle heißt nicht „null CPU"
+
+A session that is finished still ticks. Measured on the affected machine over a 3 minute
+window:
+
+| pid | role | ΔCPU over 180 s | duty cycle |
+|---|---|---|---|
+| 1394 | session between turns | +0.40 s | 0.22 % |
+| 29624 | fresh wrapper spawn | +0.01 s | 0.006 % |
+| 86242 | session doing work | +4.56 s | 2.5 % |
+| 17890 | session doing work | +7.45 s | 4.1 % |
+
+Treating *any* CPU increase as activity would therefore reset the idle clock on every
+poll for ever, and the override could never fire — the same "never clean anything"
+outcome it exists to remove. Activity is instead a rate: CPU consumed since the previous
+poll divided by the time since it, compared against a threshold of **1 % of one core**.
+That sits an order of magnitude above the measured heartbeat and an order of magnitude
+below the measured floor of real work.
+
+The rate is measured per poll, not since the last activity. Measuring it since the last
+activity would dilute a genuine wake-up by however long the process had been idle
+beforehand, so a session resuming after three hours would take hours to be recognised as
+working again. A slow trickle cannot creep past the threshold either, because a trickle's
+per-poll rate is below it by definition.
 
 ### Killing a wrapper is survivable — but that is not the safety argument
 
