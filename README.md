@@ -497,7 +497,28 @@ disaster. It is deliberately **not** the default, because *"the damage happened 
 recoverable"* is not a safety argument — it is a mitigation. The default is to leave a
 working process alone and tell the user why.
 
-## Build and install
+## Install
+
+### From a release
+
+Download `OpenZombr-<version>.zip` from the
+[releases page](https://github.com/trsdn/OpenZombr/releases), unzip it, and move
+`OpenZombr.app` to `/Applications`.
+
+The build is **ad-hoc signed, not notarised** — there is no Apple Developer ID behind this
+project — so Gatekeeper will refuse the first launch. Clear the quarantine attribute
+yourself, after checking the published SHA-256 against the downloaded file:
+
+```bash
+shasum -a 256 OpenZombr-<version>.zip     # compare with checksum.txt on the release
+xattr -dr com.apple.quarantine /Applications/OpenZombr.app
+open /Applications/OpenZombr.app
+```
+
+Given that this app sends `SIGKILL` to processes on your behalf, building it yourself from
+source is the better option, and it is one command.
+
+### From source
 
 ```bash
 make build      # debug build
@@ -508,7 +529,24 @@ make install    # install to /Applications and launch
 ```
 
 Requires macOS 14+ and a Swift 6.1 toolchain. Launch at login is offered via
-`SMAppService` and only works from the installed `.app`.
+`SMAppService` and only works from the installed `.app` — not from `swift run` and not from
+a bundle sitting on an external volume, where the login-time launch would race the mount.
+
+**Auto-cleanup is off by default, and you should leave it off until you have watched
+`--idle-watch` on your own machine.** The guard is tuned for one specific leaking wrapper;
+every safety rule in it was added because a measurement showed the previous set was
+insufficient.
+
+## Continuous integration
+
+| Workflow | Runs on | What it proves |
+| --- | --- | --- |
+| `validate-swift` | push to `master`, PRs | debug + release build, the full test suite, that the unsigned bundle assembles, that `LSUIElement` survives into `Info.plist`, and that `--probe` reads the runner's own process table |
+| `secret-scan` | push to `master`, PRs | no credential-shaped strings in the tree or in the pushed commits |
+| `release` | publishing a release | tests, a version-stamped bundle whose `CFBundleShortVersionString` must equal the tag, and a zip plus SHA-256 attached to the release |
+
+The release workflow refuses to publish if the bundle version and the tag disagree, so a
+forgotten `CHANGELOG.md` heading fails the build instead of shipping a mislabelled app.
 
 ### Verifying the reader by hand
 

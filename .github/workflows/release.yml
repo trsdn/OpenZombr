@@ -1,0 +1,78 @@
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild and publish, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Resolve release metadata
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Select Xcode 26
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.app || sudo xcode-select -s /Applications/Xcode.app
+          swift --version
+
+      # A watchdog that kills processes must never ship on a red suite.
+      - name: Run Swift tests
+        run: swift test
+
+      # There is no Developer ID certificate for this project, so the bundle is
+      # ad-hoc signed. Gatekeeper will quarantine the download; the release notes
+      # tell users how to clear it. Adding MACOS_CERTIFICATE later is the only
+      # change needed to produce a signed build.
+      - name: Build the app bundle
+        env:
+          VERSION: ${{ env.RELEASE_VERSION }}
+        run: make bundle-unsigned
+
+      - name: Verify the bundle carries the release version
+        run: |
+          plist="dist/OpenZombr.app/Contents/Info.plist"
+          built="$(plutil -extract CFBundleShortVersionString raw "$plist")"
+          test "$built" = "$RELEASE_VERSION" \
+            || { echo "::error::bundle says $built, tag says $RELEASE_VERSION"; exit 1; }
+          test "$(plutil -extract LSUIElement raw "$plist")" = "true"
+
+      - name: Package
+        run: |
+          ditto -c -k --keepParent dist/OpenZombr.app "dist/OpenZombr-${RELEASE_VERSION}.zip"
+          shasum -a 256 "dist/OpenZombr-${RELEASE_VERSION}.zip" | tee dist/checksum.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenZombr-${{ env.RELEASE_VERSION }}
+          path: dist/OpenZombr-${{ env.RELEASE_VERSION }}.zip
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "dist/OpenZombr-${RELEASE_VERSION}.zip" dist/checksum.txt --clobber
