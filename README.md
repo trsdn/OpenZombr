@@ -532,6 +532,20 @@ Requires macOS 14+ and a Swift 6.1 toolchain. Launch at login is offered via
 `SMAppService` and only works from the installed `.app` — not from `swift run` and not from
 a bundle sitting on an external volume, where the login-time launch would race the mount.
 
+The preferences toggle is not the only way to reach it, and deliberately so: a watchdog
+whose autostart is *asserted* rather than read back is one silent reboot away from being
+gone unnoticed. `--login-item` sets and, more usefully, reports the registration from a
+terminal, printing the raw `SMAppService.Status` next to the wording:
+
+```bash
+/Applications/OpenZombr.app/Contents/MacOS/OpenZombr --login-item register
+/Applications/OpenZombr.app/Contents/MacOS/OpenZombr --login-item status
+# Login-Item: registriert [status=1, wirksam=ja] — /Applications/OpenZombr.app
+```
+
+`requiresApproval` is reported as `wirksam=nein`. In that state the item exists but macOS
+will not start it, which looks like success until the reboot that disproves it.
+
 **Auto-cleanup is off by default, and you should leave it off until you have watched
 `--idle-watch` on your own machine.** The guard is tuned for one specific leaking wrapper;
 every safety rule in it was added because a measurement showed the previous set was
