@@ -44,4 +44,16 @@ public enum ProcessTableError: Error, CustomStringConvertible {
             return "sysctl returned an unexpected buffer size"
         }
     }
+
+    /// The UI is German, and `description` is English because it is also what lands in a
+    /// terminal and in bug reports. The `sysctl` call and the strerror text stay untranslated
+    /// on purpose: they are the searchable part, and a translated errno helps nobody.
+    public var germanDescription: String {
+        switch self {
+        case .sysctlFailed(let name, let code):
+            return "sysctl(\(name)) fehlgeschlagen: \(String(cString: strerror(code))) (\(code))"
+        case .unexpectedSize:
+            return "sysctl lieferte eine unerwartete Puffergröße"
+        }
+    }
 }

@@ -89,4 +89,14 @@ final class FormattingTests: XCTestCase {
         XCTAssertTrue(Severity.critical > Severity.warning)
         XCTAssertTrue(Severity.warning > Severity.normal)
     }
+    /// The UI is German; an English error string leaking into the menu is a small but real
+    /// inconsistency. The sysctl name and the strerror text stay untranslated on purpose.
+    func testProcessTableErrorHasGermanWordingForTheMenu() {
+        let failure = ProcessTableError.sysctlFailed(name: "kern.proc.all", errno: EPERM)
+        XCTAssertTrue(failure.germanDescription.contains("fehlgeschlagen"))
+        XCTAssertTrue(failure.germanDescription.contains("kern.proc.all"))
+        XCTAssertTrue(failure.description.contains("failed"))
+        XCTAssertTrue(
+            ProcessTableError.unexpectedSize.germanDescription.contains("Puffergröße"))
+    }
 }

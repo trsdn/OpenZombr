@@ -43,8 +43,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the last sample actually succeeded. A failing poll leaves the previous snapshot in
   place, so a blind watchdog used to look exactly like one reporting good news.
 
+### Changed
+
+- A sampling error shown in the menu is now German, matching the rest of the UI. The
+  `sysctl` name and the `strerror` text stay untranslated, because those are the searchable
+  part and a translated errno helps nobody.
+
 ### Documentation
 
+- The README described candidate ordering as three tiers — no session, stale session,
+  active session — but the sort key is the single boolean "is this session active?", so a
+  wrapper with no session and one with a stale session are equally eligible and separated
+  only by zombie count.
+- "Only parents above the zombie threshold" was off by one: the guard skips below the
+  threshold, so a parent holding exactly the configured number is a candidate.
+- The by-hand verification recipe compared a uid-scoped `--probe` count against a
+  whole-machine `ps` count. It agrees on a single-user Mac and silently stops agreeing
+  anywhere else; the command is now filtered by uid, which is what `kern.maxprocperuid`
+  is measured against.
+- `--idle-watch` documented neither its defaults (300 s duration, 120 s threshold, sampled
+  every 30 s) nor that its threshold default deliberately differs from the guard's two hour
+  one. `--login-item unregister` was implemented but undocumented, and `AGENTS.md` still
+  listed `--probe` as the only flag.
 - The README claimed auto-cleanup was off by default; the code defaults it to on and the
   evidence log shows it running. The code is the intended behaviour — the leak recurs daily
   and unattended machines are the point — so the README now says so, and says plainly that

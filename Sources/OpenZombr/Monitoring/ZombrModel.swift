@@ -143,7 +143,8 @@ public final class ZombrModel: ObservableObject {
                 maybeAutoCleanup(snapshot: snapshot)
             }
         } catch {
-            lastError = "\(error)"
+            // German for the menu, since that is where it is read.
+            lastError = (error as? ProcessTableError)?.germanDescription ?? "\(error)"
         }
     }
 

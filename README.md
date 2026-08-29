@@ -120,7 +120,9 @@ These are the rules that matter most, and each one is covered by a unit test:
   `bash → copilot(87594) → agency copilot(87537) → GitHub Copilot.app(4264)`, and PID
   87537 was an `agency` wrapper holding ~600 zombies — a perfect target by every other
   rule. Killing it would have severed the user's active session.
-* **Never a zombie.** Only parents above the zombie threshold are ever considered.
+* **Never a zombie.** Only parents *at or above* the zombie threshold are ever considered —
+  the comparison is `< threshold` skips, so a parent holding exactly the configured number
+  is a candidate.
 * **Never a process that still hosts an active session.** See below — this is the rule
   that keeps working once the app is launched at login.
 * **SIGTERM before SIGKILL.** The known offender ignores SIGTERM, so escalation is
@@ -214,9 +216,11 @@ never mistaken for a finished session, short enough that a machine leaking ~600 
 hour is rescued well before the limit. The wrapper that gave the game away on the day had
 been idle for five hours.
 
-Candidates are ordered idle-first, so a wrapper with no session at all is reaped before
-one whose session is merely stale, which is reaped before an active one is even
-considered.
+Candidates are ordered idle-first: everything whose session is not active sorts ahead of
+everything whose session is, and within each group the biggest offender comes first. Note
+that this is two groups, not three — a wrapper with no session at all and one whose session
+has gone stale are equally eligible and are separated only by zombie count, because the
+sort key is the single question "is this session active?".
 
 Two deliberate conservative choices:
 
@@ -424,8 +428,13 @@ verdict for every wrapper with a session, and signals nothing, ever.
 OpenZombr --idle-watch <Dauer in s> <Schwelle in s>
 ```
 
-Pass a short threshold to see the behaviour without waiting out the two hour default. The
-guard needs at least two readings, so a single `--probe` cannot show it, and the menu bar
+Both arguments are optional: the duration defaults to 300 s and the threshold to 120 s,
+and it samples every 30 s. Note that the threshold default here is deliberately *not* the
+two hour cleanup default — this mode exists to be watched, not waited out. Pass a short
+threshold to see the behaviour without waiting out the two hour default the guard itself
+uses.
+
+The guard needs at least two readings, so a single `--probe` cannot show it, and the menu bar
 app has the history but no textual output. Both of the design defects described above were
 found with this mode rather than by reasoning.
 
@@ -541,6 +550,7 @@ terminal, printing the raw `SMAppService.Status` next to the wording:
 /Applications/OpenZombr.app/Contents/MacOS/OpenZombr --login-item register
 /Applications/OpenZombr.app/Contents/MacOS/OpenZombr --login-item status
 # Login-Item: registriert [status=1, wirksam=ja] — /Applications/OpenZombr.app
+/Applications/OpenZombr.app/Contents/MacOS/OpenZombr --login-item unregister
 ```
 
 `requiresApproval` is reported as `wirksam=nein`. In that state the item exists but macOS
@@ -577,10 +587,14 @@ forgotten `CHANGELOG.md` heading fails the build instead of shipping a mislabell
 
 ```bash
 make probe
-ps -Ao stat | grep -c '^Z'     # zombie count, all users
+ps -axo uid,stat | awk -v u="$(id -u)" '$1 == u && $2 ~ /^Z/' | wc -l
 ```
 
-The two zombie counts should agree.
+The two zombie counts should agree. The `awk` filter is not decoration: `--probe` reports
+only the current uid, because `kern.maxprocperuid` is a *per-uid* limit and zombies owned
+by someone else do not consume the slots this app is watching. Comparing against a
+whole-machine count (`ps -Ao stat | grep -c '^Z'`) happens to match on a single-user Mac
+and quietly stops matching everywhere else.
 
 ## Repository layout
 
