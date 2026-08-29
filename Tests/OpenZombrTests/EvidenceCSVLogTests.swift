@@ -52,21 +52,66 @@ final class EvidenceCSVLogTests: XCTestCase {
         let row = EvidenceCSVLog.row(
             snapshot: snapshot, forecast: forecast, action: "poll", result: "",
             formatter: formatter)
-        let fields = row.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        let fields = Self.fields(of: row)
 
         XCTAssertEqual(fields.count, EvidenceCSVLog.header.split(separator: ",").count)
-        XCTAssertEqual(fields[1], "3869")
-        XCTAssertEqual(fields[2], "3326")
-        XCTAssertEqual(fields[3], "4000")
-        XCTAssertEqual(fields[4], "96.7")
-        XCTAssertEqual(fields[5], "131")
-        XCTAssertEqual(fields[6], "10.00")
-        XCTAssertEqual(fields[7], "786")
-        XCTAssertEqual(fields[8], "87537")
-        XCTAssertEqual(fields[9], "agency")
-        XCTAssertEqual(fields[10], "600")
-        XCTAssertEqual(fields[11], "no-session")
-        XCTAssertEqual(fields[12], "poll")
+        XCTAssertEqual(fields["total_procs"], "3869")
+        XCTAssertEqual(fields["zombies"], "3326")
+        XCTAssertEqual(fields["limit"], "4000")
+        XCTAssertEqual(fields["limit_source"], "per-uid")
+        XCTAssertEqual(fields["usage_pct"], "96.7")
+        XCTAssertEqual(fields["free_slots"], "131")
+        XCTAssertEqual(fields["growth_per_min"], "10.00")
+        XCTAssertEqual(fields["eta_seconds"], "786")
+        XCTAssertEqual(fields["top_parent_pid"], "87537")
+        XCTAssertEqual(fields["top_parent_name"], "agency")
+        XCTAssertEqual(fields["top_parent_zombies"], "600")
+        XCTAssertEqual(fields["session_signal"], "no-session")
+        XCTAssertEqual(fields["action"], "poll")
+        XCTAssertEqual(fields["override"], "")
+    }
+
+    /// The binding ceiling is recorded, not just the number it produced. Without it the
+    /// 2026-08-29 incident is unreadable after the fact: every row said `limit=4000` while
+    /// `fork()` was failing against an `RLIMIT_NPROC` of 2666.
+    func testRowNamesTheBindingCeilingAndItsNumber() {
+        let formatter = ISO8601DateFormatter()
+        let snapshot = Fixture.snapshot(
+            totalProcesses: 2744, zombieCount: 2038,
+            limits: ProcessLimits(perUID: 4000, softNProc: 2666, systemWide: 4000),
+            offenders: [Fixture.parent(pid: 28979, zombieCount: 526)])
+
+        let fields = Self.fields(
+            of: EvidenceCSVLog.row(
+                snapshot: snapshot, forecast: .unavailable, action: "poll", result: "",
+                formatter: formatter))
+
+        XCTAssertEqual(fields["limit"], "2666")
+        XCTAssertEqual(fields["limit_source"], "rlimit-nproc")
+        XCTAssertEqual(fields["free_slots"], "0")
+        XCTAssertEqual(fields["usage_pct"], "102.9")
+    }
+
+    /// A kill that only happened because the machine was out of slots must be
+    /// distinguishable from an ordinary one, forever, in the file that is the evidence.
+    func testEmergencyOverrideIsRecordedInItsOwnColumn() {
+        let formatter = ISO8601DateFormatter()
+        let snapshot = Fixture.snapshot(offenders: [Fixture.parent(pid: 42, zombieCount: 500)])
+
+        let fields = Self.fields(
+            of: EvidenceCSVLog.row(
+                snapshot: snapshot, forecast: .unavailable, action: "kill:15+9",
+                result: "sigkill", emergencyOverride: true, formatter: formatter))
+
+        XCTAssertEqual(fields["override"], "emergency")
+        XCTAssertEqual(fields["action"], "kill:15+9")
+    }
+
+    /// Fields keyed by header name, so the assertions survive a column being added.
+    private static func fields(of row: String) -> [String: String] {
+        let names = EvidenceCSVLog.header.split(separator: ",").map(String.init)
+        let values = row.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        return Dictionary(uniqueKeysWithValues: zip(names, values))
     }
 
     /// A process name containing a comma would otherwise shift every following column.

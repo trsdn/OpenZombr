@@ -131,6 +131,14 @@ if CommandLine.arguments.contains("--probe") {
                 + "(\(snapshot.liveProcesses) live, \(snapshot.zombieCount) Zombies) "
                 + "von \(snapshot.limit) — \(Formatting.percent(snapshot.usageFraction)) belegt, "
                 + "\(snapshot.freeSlots) Slots frei")
+        // All three ceilings, not just the effective one: the point of the probe is to
+        // let a human check the app's arithmetic against `sysctl` and `launchctl limit`.
+        print(
+            "Limit: \(snapshot.bindingCeiling.germanDescription) "
+                + "— kern.maxprocperuid=\(snapshot.limits.perUID)"
+                + ", RLIMIT_NPROC=\(snapshot.limits.softNProc.map(String.init) ?? "unlesbar")"
+                + ", kern.maxproc=\(snapshot.limits.systemWide.map(String.init) ?? "unlesbar")"
+                + " (\(snapshot.foreignProcesses) Slots von anderen Benutzern belegt)")
         print("severity: \(snapshot.severity(thresholds: thresholds).title)")
 
         if snapshot.offenders.isEmpty {

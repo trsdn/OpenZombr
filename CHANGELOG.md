@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The evidence log gains two columns. `limit_source` names which ceiling produced the
+  `limit` value (`per-uid`, `rlimit-nproc` or `system-wide`), without which the incident of
+  2026-08-29 is unreadable after the fact — every row claimed `limit=4000` while `fork()`
+  was failing at 2666. `override` marks a kill that only happened because the machine was
+  out of slots. Adding columns rotates the existing log aside, as designed.
+
+- `--probe` now prints all three ceilings and the number of slots held by other uids, so
+  the app's arithmetic can be checked by hand against `sysctl` and `launchctl limit`.
+
 - `--login-item [status|register|unregister]` reads back or changes the launch-at-login
   registration from a terminal. `SMAppService.mainApp` always acts on the *calling* bundle,
   so no external command can register the app on its behalf, and until now the only way to
@@ -19,6 +28,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exists in that state but macOS will not start it.
 
 ### Fixed
+
+- **The app measured against the wrong ceiling and therefore never intervened.** Thresholds
+  were percentages of `kern.maxprocperuid` alone, but `fork()` also fails at `RLIMIT_NPROC`
+  and at `kern.maxproc`. On 2026-08-29 `kern.maxprocperuid` was raised from 2666 to 4000
+  mid-incident and the app followed it, while `RLIMIT_NPROC` — inherited from launchd at
+  login, and unaffected by a sysctl write — stayed at 2666. For the next nine hours the uid
+  held 2666–2744 processes: `fork()` was returning `EAGAIN`, no new session could be
+  started, and the machine had to be restarted. The app reported 67,5 % used and 1299 free
+  slots, peaked at 68,6 %, never crossed its 75 % critical threshold, and so never ran a
+  single automatic cleanup. The effective limit is now the minimum of all three ceilings,
+  with `kern.maxproc` reduced by the slots other uids hold; the same reading is now 102,9 %
+  with zero free slots. An unreadable ceiling counts as "does not constrain", never as
+  zero, so a failed syscall cannot manufacture pressure. The binding ceiling is named in
+  the menu, in notifications, in `--probe` and in the new `limit_source` CSV column.
+
+- **The idle rule protected the one process that needed reaping.** Even reaching the
+  critical threshold would not have helped: the worst offender held 526 zombies but its
+  idle clock kept restarting — `cpu_idle=1560; log_age=1607` at 22:42, back to
+  `cpu_idle=0` at 23:01 — so it never accumulated the required two idle hours and was
+  treated as an active session throughout. The manual cleanup at 22:42 reported
+  `no-targets` against 2038 zombies. Once free slots fall to or below 5 % of the effective
+  limit, the idle protection may now be bypassed for one parent per run, the one holding
+  the most zombies: a session that cannot `fork()` is already broken, so the rule has
+  nothing left to protect. The unconditional protections (PID ≤ 1, foreign uid, own
+  ancestry) are still evaluated first and cannot be reached by pressure; a parent whose
+  idle signals are unreadable is still never overridden, because absence of evidence must
+  not read as evidence of idleness; and the allowlist and zombie threshold still apply,
+  with a candidate they reject not consuming the run's single override. Overrides are
+  reported separately everywhere: `override=emergency` in the CSV, a
+  `Notfall-Bereinigung:` prefix on the run summary, and a distinct `emergencyBudgetSpent`
+  skip reason. The whole mechanism can be switched off in the preferences.
 
 - A PID is not an identity. Targets were selected against a snapshot and then signalled by
   PID alone, so a target that exited between selection and delivery could have its number

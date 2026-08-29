@@ -170,21 +170,62 @@ public struct SysctlProcessEnumerator: ProcessEnumerating {
     }
 }
 
-/// Reads `kern.maxprocperuid` at runtime.
+/// Reads the process ceilings at runtime.
 ///
-/// Never hardcoded: it is 4000 on the machine this app was written for, but it is a
-/// tunable and the thresholds are percentages of whatever it currently is.
+/// Never hardcoded: `kern.maxprocperuid` is 4000 on the machine this app was written for,
+/// but it is a tunable and the thresholds are percentages of whatever it currently is.
 public struct SysctlProcessLimitReader: ProcessLimitReading {
     public init() {}
+
+    /// All three ceilings. Only `kern.maxprocperuid` is required; the other two degrade
+    /// to `nil`, which `ProcessLimits` treats as "does not constrain" rather than as
+    /// zero, so an unreadable limit can never fabricate pressure that is not there.
+    public func processLimits() throws -> ProcessLimits {
+        ProcessLimits(
+            perUID: try maximumProcessesPerUID(),
+            softNProc: Self.softProcessLimit(),
+            systemWide: try? maximumProcesses()
+        )
+    }
 
     public func maximumProcessesPerUID() throws -> Int {
         try Self.integer(forName: "kern.maxprocperuid")
     }
 
-    /// System-wide limit. Not used for thresholds, only shown as context in the UI.
+    /// System-wide limit, shared with every other uid.
     public func maximumProcesses() throws -> Int {
         try Self.integer(forName: "kern.maxproc")
     }
+
+    /// `RLIMIT_NPROC` — the soft per-uid process limit this process inherited.
+    ///
+    /// This is the limit that actually bit during the incident. It is handed down from
+    /// launchd at login and raising `kern.maxprocperuid` afterwards does not change it,
+    /// so the two can disagree indefinitely: measured, `kern.maxprocperuid` read 4000
+    /// while `launchctl limit maxproc` still reported a soft limit of 2666, and the uid
+    /// sat above 2666 for nine hours unable to fork.
+    ///
+    /// Read with `getrlimit`, a syscall. Not by shelling out to `ulimit` or `launchctl`:
+    /// every subprocess is a `fork()`, which is precisely the operation that fails in the
+    /// condition being monitored.
+    ///
+    /// Reading our *own* rlimit is the honest measurement, not an approximation. Started
+    /// at login the app is a child of launchd, exactly like the user's terminal and every
+    /// session wrapper, so it inherits the same value they do.
+    static func softProcessLimit() -> Int? {
+        var limits = rlimit()
+        guard getrlimit(RLIMIT_NPROC, &limits) == 0 else { return nil }
+        // An unlimited soft limit constrains nothing, and must not be truncated into a
+        // very small `Int` on the way through.
+        guard limits.rlim_cur < Self.unlimitedRLimit, limits.rlim_cur <= rlim_t(Int.max) else {
+            return nil
+        }
+        return Int(limits.rlim_cur)
+    }
+
+    /// `RLIM_INFINITY`, restated because it is a C macro
+    /// (`(((__uint64_t)1 << 63) - 1)`) and so is not imported into Swift.
+    private static let unlimitedRLimit = rlim_t(UInt64(1) << 63) - 1
 
     private static func integer(forName name: String) throws -> Int {
         var value: Int32 = 0

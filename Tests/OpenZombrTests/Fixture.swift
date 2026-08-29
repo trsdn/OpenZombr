@@ -82,12 +82,32 @@ enum Fixture {
         protectedPIDs: Set<pid_t> = [1],
         timestamp: Date = Fixture.epoch
     ) -> ZombieSnapshot {
+        snapshot(
+            totalProcesses: totalProcesses,
+            zombieCount: zombieCount,
+            limits: ProcessLimits(perUID: limit),
+            offenders: offenders,
+            protectedPIDs: protectedPIDs,
+            timestamp: timestamp
+        )
+    }
+
+    static func snapshot(
+        totalProcesses: Int = 1000,
+        zombieCount: Int = 500,
+        limits: ProcessLimits,
+        foreignProcesses: Int = 0,
+        offenders: [ZombieParent] = [],
+        protectedPIDs: Set<pid_t> = [1],
+        timestamp: Date = Fixture.epoch
+    ) -> ZombieSnapshot {
         ZombieSnapshot(
             timestamp: timestamp,
             uid: uid,
             totalProcesses: totalProcesses,
             zombieCount: zombieCount,
-            limit: limit,
+            limits: limits,
+            foreignProcesses: foreignProcesses,
             offenders: offenders,
             protectedPIDs: protectedPIDs
         )
@@ -129,8 +149,12 @@ final class StubProcessEnumerator: ProcessEnumerating, @unchecked Sendable {
 }
 
 struct StubLimitReader: ProcessLimitReading {
-    let limit: Int
-    func maximumProcessesPerUID() throws -> Int { limit }
+    let limits: ProcessLimits
+
+    init(limit: Int) { self.limits = ProcessLimits(perUID: limit) }
+    init(limits: ProcessLimits) { self.limits = limits }
+
+    func processLimits() throws -> ProcessLimits { limits }
 }
 
 /// Records every signal instead of sending it, and models which signal a process

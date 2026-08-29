@@ -13,6 +13,11 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// mistaken for a finished session; short enough that a machine leaking 600 zombies
     /// an hour is rescued well before it reaches the fork limit.
     public static let defaultSessionIdleThreshold: TimeInterval = 2 * 3600
+    /// Five percent of the effective limit. Below this the machine is at the wall, not
+    /// approaching it.
+    public static let defaultEmergencyFreeSlotFraction = 0.05
+    /// One. The override exists to buy slots back, not to clear the table.
+    public static let defaultMaximumEmergencyOverrides = 1
 
     /// A parent is only ever considered once it owns at least this many zombies.
     /// Reaping a handful of zombies is not worth killing a process over.
@@ -49,6 +54,29 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// window would reap a live session that happens to be thinking. The wrappers that
     /// actually needed reaping had been idle for hours - one for five.
     public var sessionIdleThreshold: TimeInterval
+    /// Whether the idle protection may be bypassed once free slots run out.
+    ///
+    /// The 2 h idle rule is correct while there is room to be patient, and wrong at the
+    /// wall. Measured during the incident: the worst offender held 526 zombies for hours,
+    /// but its idle clock kept restarting — `cpu_idle=1560; log_age=1607` at 22:42, back
+    /// to `cpu_idle=0` at 23:01 — so it never once accumulated two idle hours and was
+    /// protected the entire time. The manual cleanup at 22:42 logged `no-targets` against
+    /// 2038 zombies because of it.
+    ///
+    /// The argument for overriding is not that the session is finished; it is that at
+    /// zero free slots the protection has stopped protecting anything. A session that
+    /// cannot `fork()` is already broken, and every other session on the machine is
+    /// broken with it. Killing the wrapper was measured to leave its live `copilot` child
+    /// running, reparented to launchd, so the bounded cost is one wrapper against a
+    /// machine that otherwise has to be rebooted — which is what actually happened.
+    public var emergencyOverrideEnabled: Bool
+    /// Share of the effective limit that must still be free for the idle protection to
+    /// hold unconditionally. At or below it, the override may fire.
+    public var emergencyFreeSlotFraction: Double
+    /// How many parents one run may reap through the override. Deliberately one: the
+    /// worst offender alone freed 526 slots, and if that is not enough the next poll can
+    /// take the next one, with fresh evidence.
+    public var maximumEmergencyOverrides: Int
 
     public init(
         minimumZombiesPerParent: Int = CleanupPolicy.defaultMinimumZombies,
@@ -57,7 +85,10 @@ public struct CleanupPolicy: Sendable, Equatable {
         terminationGracePeriod: TimeInterval = 2,
         maximumTargetsPerRun: Int = 10,
         spareParentsWithActiveSession: Bool = true,
-        sessionIdleThreshold: TimeInterval = CleanupPolicy.defaultSessionIdleThreshold
+        sessionIdleThreshold: TimeInterval = CleanupPolicy.defaultSessionIdleThreshold,
+        emergencyOverrideEnabled: Bool = true,
+        emergencyFreeSlotFraction: Double = CleanupPolicy.defaultEmergencyFreeSlotFraction,
+        maximumEmergencyOverrides: Int = CleanupPolicy.defaultMaximumEmergencyOverrides
     ) {
         self.minimumZombiesPerParent = max(1, minimumZombiesPerParent)
         self.allowedNamePatterns = allowedNamePatterns.filter { !$0.isEmpty }
@@ -66,6 +97,18 @@ public struct CleanupPolicy: Sendable, Equatable {
         self.maximumTargetsPerRun = max(1, maximumTargetsPerRun)
         self.spareParentsWithActiveSession = spareParentsWithActiveSession
         self.sessionIdleThreshold = max(60, sessionIdleThreshold)
+        self.emergencyOverrideEnabled = emergencyOverrideEnabled
+        // Clamped below 0.5: an override that fires at half-empty is not an emergency
+        // measure, it is the normal path with the safety rule switched off.
+        self.emergencyFreeSlotFraction = min(max(emergencyFreeSlotFraction, 0), 0.5)
+        self.maximumEmergencyOverrides = max(0, maximumEmergencyOverrides)
+    }
+
+    /// Whether the machine is out of room, and the idle protection may therefore be
+    /// bypassed for the single worst offender.
+    public func isUnderEmergencyPressure(_ snapshot: ZombieSnapshot) -> Bool {
+        guard emergencyOverrideEnabled, maximumEmergencyOverrides > 0 else { return false }
+        return snapshot.freeSlotFraction <= emergencyFreeSlotFraction
     }
 
     /// Substring matching, not regex: the patterns are typed by a user into a
@@ -96,7 +139,15 @@ public enum SkipReason: String, Sendable, Equatable {
     /// no basis for a decision. Distinct from `hasActiveSession`, which means the signals
     /// were read and said the session is alive. Both prevent a kill, but only this one is
     /// a degraded state the user may want to act on.
+    ///
+    /// The emergency override deliberately does *not* apply here. Absence of evidence must
+    /// never read as evidence of idleness, and least of all under pressure, when the
+    /// temptation to act is greatest.
     case sessionSignalUnavailable
+    /// The machine is out of slots and this parent has an active session, but the run's
+    /// emergency override was already spent on a worse offender. Recorded separately so a
+    /// protected parent at 0 free slots never looks like an ordinary "session is busy".
+    case emergencyBudgetSpent
 
     public var germanDescription: String {
         switch self {
@@ -110,6 +161,8 @@ public enum SkipReason: String, Sendable, Equatable {
         case .hasActiveSession: return "hat eine aktive Sitzung (Kindprozess arbeitet)"
         case .sessionSignalUnavailable:
             return "Sitzungssignale nicht lesbar — keine Entscheidungsgrundlage"
+        case .emergencyBudgetSpent:
+            return "aktive Sitzung — Notfall-Kontingent bereits verbraucht"
         }
     }
 }

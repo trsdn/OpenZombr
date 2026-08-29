@@ -30,6 +30,10 @@ public struct MenuBarContentView: View {
                 "Prozesse: \(Formatting.count(snapshot.totalProcesses)) / "
                     + "\(Formatting.count(snapshot.limit)) "
                     + "(\(Formatting.percent(snapshot.usageFraction)))")
+            // Naming the ceiling is not decoration. During the incident the app showed
+            // "67 % von 4000" while the binding limit was RLIMIT_NPROC at 2666 and fork()
+            // was already failing; the user had no way to see which number was wrong.
+            Text("Limit: \(snapshot.bindingCeiling.germanDescription)")
             Text("Zombies: \(Formatting.count(snapshot.zombieCount))")
             Text("Freie Slots: \(Formatting.count(snapshot.freeSlots))")
             Text("Zuwachs: \(Formatting.rate(model.forecast.slotsPerMinute))")

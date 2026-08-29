@@ -8,9 +8,9 @@ import Foundation
 /// into a spreadsheet.
 public final class EvidenceCSVLog: @unchecked Sendable {
     public static let header =
-        "timestamp,total_procs,zombies,limit,usage_pct,free_slots,"
+        "timestamp,total_procs,zombies,limit,limit_source,usage_pct,free_slots,"
         + "growth_per_min,eta_seconds,top_parent_pid,top_parent_name,top_parent_zombies,"
-        + "session_signal,action,result"
+        + "session_signal,action,override,result"
 
     public let fileURL: URL
     private let maxBytes: UInt64
@@ -72,6 +72,7 @@ public final class EvidenceCSVLog: @unchecked Sendable {
                 action: action,
                 result: detail,
                 overrideTopParent: result.parent,
+                emergencyOverride: result.wasEmergencyOverride,
                 formatter: formatter
             )
             queue.sync {
@@ -91,6 +92,7 @@ public final class EvidenceCSVLog: @unchecked Sendable {
         action: String,
         result: String,
         overrideTopParent: ZombieParent? = nil,
+        emergencyOverride: Bool = false,
         formatter: ISO8601DateFormatter
     ) -> String {
         let top = overrideTopParent ?? snapshot.topOffender
@@ -99,6 +101,10 @@ public final class EvidenceCSVLog: @unchecked Sendable {
             String(snapshot.totalProcesses),
             String(snapshot.zombieCount),
             String(snapshot.limit),
+            // Which ceiling produced that number. Without it the previous incident is
+            // unreadable after the fact: the log showed "limit=4000, 67 % used" while the
+            // binding limit was RLIMIT_NPROC at 2666 and the machine could not fork.
+            snapshot.bindingCeiling.rawValue,
             String(format: "%.1f", snapshot.usageFraction * 100),
             String(snapshot.freeSlots),
             String(format: "%.2f", forecast.slotsPerMinute),
@@ -108,6 +114,7 @@ public final class EvidenceCSVLog: @unchecked Sendable {
             top.map { String($0.zombieCount) } ?? "",
             top.map(sessionSignal(for:)) ?? "",
             sanitize(action),
+            emergencyOverride ? "emergency" : "",
             sanitize(result),
         ]
         return fields.joined(separator: ",")

@@ -56,11 +56,20 @@ public struct ReapResult: Sendable, Equatable {
     /// Signals actually delivered, in the order they were sent. Asserted by tests so the
     /// escalation order can never silently regress into "SIGKILL first".
     public let signalsSent: [Int32]
+    /// True when this parent only became a target because the machine was out of slots
+    /// and the idle protection was bypassed for it.
+    public let wasEmergencyOverride: Bool
 
-    public init(parent: ZombieParent, outcome: ReapOutcome, signalsSent: [Int32]) {
+    public init(
+        parent: ZombieParent,
+        outcome: ReapOutcome,
+        signalsSent: [Int32],
+        wasEmergencyOverride: Bool = false
+    ) {
         self.parent = parent
         self.outcome = outcome
         self.signalsSent = signalsSent
+        self.wasEmergencyOverride = wasEmergencyOverride
     }
 }
 
@@ -95,6 +104,8 @@ public struct CleanupReport: Sendable, Equatable {
     public var zombiesReaped: Int { max(0, zombiesBefore - zombiesAfter) }
     public var slotsFreed: Int { max(0, processesBefore - processesAfter) }
     public var didAnything: Bool { !results.isEmpty }
+    /// True when at least one target only qualified because the machine was out of slots.
+    public var usedEmergencyOverride: Bool { results.contains(where: \.wasEmergencyOverride) }
     /// A run that signalled something but did not actually reduce the zombie count is a
     /// failure, and is reported as such instead of being quietly counted as a success.
     public var verified: Bool { didAnything && zombiesReaped > 0 }
@@ -110,11 +121,14 @@ public struct CleanupReport: Sendable, Equatable {
             return "Keine Kandidaten — bei \(Formatting.count(blind)) Prozessen sind die "
                 + "Sitzungssignale nicht lesbar."
         }
+        // An override killed something the normal rules would have spared, so it is named
+        // rather than folded into the ordinary success line.
+        let prefix = usedEmergencyOverride ? "Notfall-Bereinigung: " : ""
         if verified {
-            return "\(Formatting.count(zombiesReaped)) Zombies aufgeräumt, "
+            return prefix + "\(Formatting.count(zombiesReaped)) Zombies aufgeräumt, "
                 + "\(Formatting.count(slotsFreed)) Slots frei."
         }
-        return "Bereinigung ohne Wirkung: Zombie-Anzahl unverändert "
+        return prefix + "Bereinigung ohne Wirkung: Zombie-Anzahl unverändert "
             + "(\(Formatting.count(zombiesAfter)))."
     }
 }
@@ -155,10 +169,19 @@ public struct ZombieReaper: Sendable {
     public struct Selection: Sendable, Equatable {
         public let targets: [ZombieParent]
         public let skipped: [SkippedParent]
+        /// Targets that only qualified because the machine was out of slots. Carried
+        /// through to the report and the evidence log, so an override is never silently
+        /// indistinguishable from an ordinary reap.
+        public let emergencyOverrides: Set<pid_t>
 
-        public init(targets: [ZombieParent], skipped: [SkippedParent]) {
+        public init(
+            targets: [ZombieParent],
+            skipped: [SkippedParent],
+            emergencyOverrides: Set<pid_t> = []
+        ) {
             self.targets = targets
             self.skipped = skipped
+            self.emergencyOverrides = emergencyOverrides
         }
     }
 
@@ -167,18 +190,27 @@ public struct ZombieReaper: Sendable {
     ///
     /// The order of the checks matters: the unconditional protections (PID 1, ownership,
     /// own ancestry) are applied before the tunable ones (policy, threshold), so no
-    /// preference value can ever unlock them.
+    /// preference value can ever unlock them. The emergency override below is deliberately
+    /// placed after all of them, and can only ever relax `spareParentsWithActiveSession`,
+    /// which is a tunable.
     ///
     /// Candidates are considered in "idle first" order — a parent with no live session
     /// child before one that still has work attached, and only then by zombie count.
     /// Ancestry alone is not enough here: when the app is started by launchd at login,
     /// its ancestor set is just `{self, 1}` and protects nothing of the user's session
     /// tree, so liveness has to carry the weight instead.
+    ///
+    /// That ordering is also what makes the emergency override safe to express as a
+    /// budget: every genuinely idle candidate is considered before any active one, so the
+    /// override is only ever spent after the harmless targets are exhausted, and then on
+    /// the largest offender.
     public func selectTargets(in snapshot: ZombieSnapshot, policy: CleanupPolicy) -> Selection {
         var targets: [ZombieParent] = []
         var skipped: [SkippedParent] = []
+        var overrides: Set<pid_t> = []
 
         let threshold = policy.sessionIdleThreshold
+        let underPressure = policy.isUnderEmergencyPressure(snapshot)
         let ordered = snapshot.offenders.sorted { lhs, rhs in
             let lhsBusy = lhs.isSessionActive(idleThreshold: threshold)
             let rhsBusy = rhs.isSessionActive(idleThreshold: threshold)
@@ -206,16 +238,32 @@ public struct ZombieReaper: Sendable {
                 skipped.append(SkippedParent(parent: parent, reason: .parentIsZombie))
                 continue
             }
+
+            // Whether this candidate is only eligible because the machine is at the wall.
+            // Decided here but not spent here: the remaining gates (allowlist, zombie
+            // threshold, run limit) still have to accept it, and a candidate they reject
+            // must not consume the run's single override.
+            var needsOverride = false
             if policy.spareParentsWithActiveSession
                 && parent.isSessionActive(idleThreshold: threshold)
             {
-                skipped.append(
-                    SkippedParent(
-                        parent: parent,
-                        reason: parent.hasUnreadableSessionSignal
-                            ? .sessionSignalUnavailable : .hasActiveSession))
-                continue
+                if parent.hasUnreadableSessionSignal {
+                    // Never overridden. The app cannot see, and pressure does not turn
+                    // "unknown" into "idle".
+                    skipped.append(
+                        SkippedParent(parent: parent, reason: .sessionSignalUnavailable))
+                    continue
+                }
+                guard underPressure, overrides.count < policy.maximumEmergencyOverrides else {
+                    skipped.append(
+                        SkippedParent(
+                            parent: parent,
+                            reason: underPressure ? .emergencyBudgetSpent : .hasActiveSession))
+                    continue
+                }
+                needsOverride = true
             }
+
             if !policy.permits(parent) {
                 skipped.append(SkippedParent(parent: parent, reason: .notPermittedByPolicy))
                 continue
@@ -228,10 +276,11 @@ public struct ZombieReaper: Sendable {
                 skipped.append(SkippedParent(parent: parent, reason: .runLimitReached))
                 continue
             }
+            if needsOverride { overrides.insert(parent.pid) }
             targets.append(parent)
         }
 
-        return Selection(targets: targets, skipped: skipped)
+        return Selection(targets: targets, skipped: skipped, emergencyOverrides: overrides)
     }
 
     // MARK: - Termination
@@ -249,53 +298,66 @@ public struct ZombieReaper: Sendable {
     /// including before the escalation, because the grace period is itself a window in
     /// which the target can exit and its number be reissued. Selection may be minutes old;
     /// this check is microseconds old.
-    public func terminate(_ parent: ZombieParent, policy: CleanupPolicy) -> ReapResult {
+    public func terminate(
+        _ parent: ZombieParent,
+        policy: CleanupPolicy,
+        wasEmergencyOverride: Bool = false
+    ) -> ReapResult {
         var sent: [Int32] = []
         let approved = ProcessIdentity(startTime: parent.startTime, uid: parent.uid)
 
+        func result(_ outcome: ReapOutcome) -> ReapResult {
+            ReapResult(
+                parent: parent, outcome: outcome, signalsSent: sent,
+                wasEmergencyOverride: wasEmergencyOverride)
+        }
+
         guard signaller.isAlive(pid: parent.pid) else {
-            return ReapResult(parent: parent, outcome: .alreadyGone, signalsSent: sent)
+            return result(.alreadyGone)
         }
         // Unreadable is not "unchanged". Refusing to signal costs one poll interval;
         // signalling the wrong process costs the user their work.
         guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
-            return ReapResult(parent: parent, outcome: .identityChanged, signalsSent: sent)
+            return result(.identityChanged)
         }
 
         guard signaller.send(signal: SIGTERM, to: parent.pid) else {
             // Delivery failed outright. Do not escalate: something is wrong with the
             // assumption that this pid is ours to signal.
-            return ReapResult(
-                parent: parent, outcome: .signalFailed(signal: SIGTERM), signalsSent: sent)
+            return result(.signalFailed(signal: SIGTERM))
         }
         sent.append(SIGTERM)
 
         sleeper.sleep(for: policy.terminationGracePeriod)
         if !signaller.isAlive(pid: parent.pid) {
-            return ReapResult(parent: parent, outcome: .terminatedBySIGTERM, signalsSent: sent)
+            return result(.terminatedBySIGTERM)
         }
 
         // The grace period is the widest reuse window in the whole routine: the target was
         // just asked to exit, so it is more likely than usual to have done so.
         guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
-            return ReapResult(parent: parent, outcome: .identityChanged, signalsSent: sent)
+            return result(.identityChanged)
         }
 
         guard signaller.send(signal: SIGKILL, to: parent.pid) else {
-            return ReapResult(
-                parent: parent, outcome: .signalFailed(signal: SIGKILL), signalsSent: sent)
+            return result(.signalFailed(signal: SIGKILL))
         }
         sent.append(SIGKILL)
 
         // SIGKILL cannot be caught, but the kernel still needs a moment to tear the
         // process down before liveness reflects it.
         sleeper.sleep(for: 0.3)
-        let outcome: ReapOutcome =
-            signaller.isAlive(pid: parent.pid) ? .survived : .terminatedBySIGKILL
-        return ReapResult(parent: parent, outcome: outcome, signalsSent: sent)
+        return result(signaller.isAlive(pid: parent.pid) ? .survived : .terminatedBySIGKILL)
     }
 
-    public func terminate(_ parents: [ZombieParent], policy: CleanupPolicy) -> [ReapResult] {
-        parents.map { terminate($0, policy: policy) }
+    public func terminate(
+        _ parents: [ZombieParent],
+        policy: CleanupPolicy,
+        emergencyOverrides: Set<pid_t> = []
+    ) -> [ReapResult] {
+        parents.map {
+            terminate(
+                $0, policy: policy, wasEmergencyOverride: emergencyOverrides.contains($0.pid))
+        }
     }
 }
