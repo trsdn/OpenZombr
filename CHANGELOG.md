@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--login-item [status|register|unregister]` reads back or changes the launch-at-login
+  registration from a terminal. `SMAppService.mainApp` always acts on the *calling* bundle,
+  so no external command can register the app on its behalf, and until now the only way to
+  set it was the preferences toggle — and the only way to check it was to believe the
+  toggle. The sibling app OpenDefendrWatchr died silently at a reboot and nobody noticed
+  for 30 h; a watchdog whose autostart is asserted rather than verified is that failure
+  waiting to happen. `requiresApproval` is reported as *not* effective, because the item
+  exists in that state but macOS will not start it.
+
 ## [0.2.0] - 2026-08-29
 
 ### Fixed

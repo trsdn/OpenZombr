@@ -102,6 +102,21 @@ if let index = CommandLine.arguments.firstIndex(of: "--log-probe") {
     exit(0)
 }
 
+/// `--login-item [status|register|unregister]` reports or changes launch-at-login.
+///
+/// Registration cannot be done from outside the app: `SMAppService.mainApp` always acts on
+/// the calling bundle. Exposing it here is what allows the state to be *read back* from a
+/// terminal rather than assumed, which matters because a watchdog that quietly fails to
+/// return after a reboot is indistinguishable from one that was never installed.
+if let index = CommandLine.arguments.firstIndex(of: "--login-item") {
+    let outcome = LoginItem.run(arguments: Array(CommandLine.arguments.dropFirst(index + 1)))
+    switch outcome {
+    case .status(let text): print(text)
+    case .failed(let text): FileHandle.standardError.write(Data("\(text)\n".utf8))
+    }
+    exit(outcome.exitCode)
+}
+
 /// `--probe` prints one reading as text and exits, without starting the menu bar app.
 /// This is what you paste into a bug report, and it is how the reader gets verified from
 /// a terminal against `ps -Ao stat | grep -c '^Z'`.
