@@ -18,6 +18,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   waiting to happen. `requiresApproval` is reported as *not* effective, because the item
   exists in that state but macOS will not start it.
 
+### Fixed
+
+- A PID is not an identity. Targets were selected against a snapshot and then signalled by
+  PID alone, so a target that exited between selection and delivery could have its number
+  reissued to an unrelated process, which would then be killed. Measured: 160 PIDs are
+  handed out every 20 seconds on the affected machine while it is *idle*, and the window
+  spans both the grace period and — for manual cleanup reusing a stored snapshot — up to a
+  full poll interval, which can be set to an hour. The start time and uid are now re-read
+  from the kernel and compared immediately before each signal, including before the SIGKILL
+  escalation. An identity that differs, or one that cannot be read at all, aborts the
+  termination and is logged as `identity-changed`; unreadable is never treated as unchanged.
+- Auto-cleanup no longer bypasses the threshold hysteresis. It fired on the raw severity of
+  a single sample, defeating `ThresholdMonitor`'s two-sample confirmation for the one code
+  path that sends SIGKILL. It now follows the confirmed severity; the menu bar still shows
+  the immediate reading, where reacting to one sample is merely noisy rather than fatal.
+- "Jetzt aufräumen" takes a fresh sample instead of acting on the stored snapshot, which
+  could be a poll interval old.
+- The session idle threshold is clamped to the log reader's horizon and the preferences
+  slider derives its range from the same constant. The slider allowed up to 24 h while the
+  reader only looks back 6 h, so any value above 6 h made the log signal unreachable and
+  silently switched cleanup off — with no visible sign that it had.
+- A stale reading is now announced in the menu before the numbers, and the model records
+  when the last sample actually succeeded. A failing poll leaves the previous snapshot in
+  place, so a blind watchdog used to look exactly like one reporting good news.
+
+### Documentation
+
+- The README claimed auto-cleanup was off by default; the code defaults it to on and the
+  evidence log shows it running. The code is the intended behaviour — the leak recurs daily
+  and unattended machines are the point — so the README now says so, and says plainly that
+  the app will send SIGKILL without being asked.
+
 ## [0.2.0] - 2026-08-29
 
 ### Fixed

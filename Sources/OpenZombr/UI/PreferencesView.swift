@@ -66,7 +66,10 @@ public struct PreferencesView: View {
                     "Sitzung gilt als beendet nach "
                         + Formatting.duration(preferences.sessionIdleHours * 3600)
                         + " ohne CPU-Nutzung",
-                    value: $preferences.sessionIdleHours, in: 0.5...24, step: 0.5
+                    value: $preferences.sessionIdleHours,
+                    in: Preferences.minimumSessionIdleHours...Preferences
+                        .maximumSessionIdleHours,
+                    step: 0.5
                 )
                 .disabled(!preferences.spareActiveSessions)
                 Text(

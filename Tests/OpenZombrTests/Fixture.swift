@@ -8,6 +8,10 @@ enum Fixture {
     static let uid: uid_t = 501
     static let otherUID: uid_t = 502
     static let epoch = Date(timeIntervalSince1970: 1_700_000_000)
+    /// The start time every fixture parent carries, so a test double can hand back an
+    /// identity that matches what `Fixture.parent` claims.
+    static let parentStartTime = Date(timeIntervalSince1970: 1_700_000_000).addingTimeInterval(
+        -3600)
 
     static func process(
         pid: pid_t,
@@ -60,7 +64,7 @@ enum Fixture {
             name: name,
             executablePath: path,
             zombieCount: zombieCount,
-            startTime: epoch.addingTimeInterval(-3600),
+            startTime: parentStartTime,
             parentIsZombie: parentIsZombie,
             liveChildCount: liveChildCount,
             sessionChildCount: sessionChildCount,
@@ -142,22 +146,40 @@ final class FakeSignaller: ProcessSignalling, @unchecked Sendable {
     /// pid -> the signal that actually terminates it. `nil` entry means nothing does.
     private var lethalSignal: [pid_t: Int32]
     private var undeliverable: Set<pid_t>
+    /// Signals a specific pid refuses to accept delivery for, so SIGTERM succeeding and
+    /// SIGKILL failing can be modelled separately. `undeliverable` blocks both.
+    private var undeliverableSignals: [pid_t: Set<Int32>]
+    /// What `verifyIdentity` reports, per pid. Absent means `.matches`, so the existing
+    /// tests keep exercising the escalation rather than the new identity guard.
+    private var verifications: [pid_t: IdentityVerification]
+    /// Verification results that take effect only from the second read onwards, modelling
+    /// a PID that is reused during the grace period.
+    private var verificationAfterFirstRead: [pid_t: IdentityVerification]
+    private var verificationReads: [pid_t: Int] = [:]
     private(set) var deliveries: [Delivery] = []
+    private(set) var verifiedPIDs: [pid_t] = []
 
     init(
         alive: Set<pid_t>,
         lethalSignal: [pid_t: Int32] = [:],
-        undeliverable: Set<pid_t> = []
+        undeliverable: Set<pid_t> = [],
+        undeliverableSignals: [pid_t: Set<Int32>] = [:],
+        verifications: [pid_t: IdentityVerification] = [:],
+        verificationAfterFirstRead: [pid_t: IdentityVerification] = [:]
     ) {
         self.alive = alive
         self.lethalSignal = lethalSignal
         self.undeliverable = undeliverable
+        self.undeliverableSignals = undeliverableSignals
+        self.verifications = verifications
+        self.verificationAfterFirstRead = verificationAfterFirstRead
     }
 
     func send(signal: Int32, to pid: pid_t) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard !undeliverable.contains(pid) else { return false }
+        guard !(undeliverableSignals[pid]?.contains(signal) ?? false) else { return false }
         deliveries.append(Delivery(pid: pid, signal: signal))
         if lethalSignal[pid] == signal { alive.remove(pid) }
         return true
@@ -167,6 +189,18 @@ final class FakeSignaller: ProcessSignalling, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return alive.contains(pid)
+    }
+
+    func verifyIdentity(ofPID pid: pid_t, matches expected: ProcessIdentity)
+        -> IdentityVerification
+    {
+        lock.lock()
+        defer { lock.unlock() }
+        verifiedPIDs.append(pid)
+        let reads = (verificationReads[pid] ?? 0) + 1
+        verificationReads[pid] = reads
+        if reads > 1, let later = verificationAfterFirstRead[pid] { return later }
+        return verifications[pid] ?? .matches
     }
 
     var signalledPIDs: Set<pid_t> {

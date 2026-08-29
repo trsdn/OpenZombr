@@ -274,4 +274,139 @@ final class ReaperSafetyTests: XCTestCase {
         XCTAssertEqual(result.outcome, .signalFailed(signal: SIGTERM))
         XCTAssertTrue(signaller.signalledPIDs.isEmpty)
     }
+    // MARK: - PID reuse
+
+    /// A PID is not an identity. Selection runs against a snapshot that can be minutes
+    /// old (`cleanupNow` may reuse one up to `maximumPollInterval` = 3600 s), and the
+    /// machine hands out PIDs fast: 160 in 20 seconds measured while *idle*. If the
+    /// target exited and its number was reissued, the replacement must not be signalled.
+    func testDoesNotSignalAPIDThatNowBelongsToSomeoneElse() {
+        let signaller = FakeSignaller(alive: [600], verifications: [600: .differs])
+        let result = reaper(signaller: signaller).terminate(
+            Fixture.parent(pid: 600, zombieCount: 500), policy: policy)
+
+        XCTAssertEqual(result.outcome, .identityChanged)
+        XCTAssertTrue(result.signalsSent.isEmpty)
+        XCTAssertTrue(signaller.deliveries.isEmpty)
+    }
+
+    /// Unreadable must never be read as unchanged. Refusing costs one poll interval;
+    /// signalling an unverified process costs the user their work.
+    func testDoesNotSignalWhenIdentityCannotBeRead() {
+        let signaller = FakeSignaller(alive: [600], verifications: [600: .unreadable])
+        let result = reaper(signaller: signaller).terminate(
+            Fixture.parent(pid: 600, zombieCount: 500), policy: policy)
+
+        XCTAssertEqual(result.outcome, .identityChanged)
+        XCTAssertTrue(signaller.deliveries.isEmpty)
+    }
+
+    /// The grace period is the widest reuse window in the routine, because the target was
+    /// just asked to exit and is therefore more likely than usual to have done so. The
+    /// SIGKILL escalation must re-verify rather than trust the check made before SIGTERM.
+    func testDoesNotEscalateToSIGKILLAfterThePIDWasReused() {
+        let signaller = FakeSignaller(
+            alive: [600], verificationAfterFirstRead: [600: .differs])
+        let result = reaper(signaller: signaller).terminate(
+            Fixture.parent(pid: 600, zombieCount: 500), policy: policy)
+
+        XCTAssertEqual(result.outcome, .identityChanged)
+        XCTAssertEqual(result.signalsSent, [SIGTERM])
+        XCTAssertEqual(signaller.deliveries.map(\.signal), [SIGTERM])
+    }
+
+    /// The identity is re-read before *both* signals, not once per run.
+    func testIdentityIsVerifiedBeforeEverySignal() {
+        let signaller = FakeSignaller(alive: [600])
+        _ = reaper(signaller: signaller).terminate(
+            Fixture.parent(pid: 600, zombieCount: 500), policy: policy)
+
+        XCTAssertEqual(signaller.verifiedPIDs, [600, 600])
+    }
+
+    /// Start times survive a round trip through `Date` as whole microseconds, so they are
+    /// compared with a tolerance — but a tolerance wide enough to admit a different
+    /// process would defeat the check.
+    func testIdentityComparisonToleratesSubSecondSkewButNotMore() {
+        let approved = ProcessIdentity(startTime: Fixture.epoch, uid: Fixture.uid)
+        XCTAssertTrue(
+            ProcessIdentity(startTime: Fixture.epoch.addingTimeInterval(0.5), uid: Fixture.uid)
+                .matches(approved))
+        XCTAssertFalse(
+            ProcessIdentity(startTime: Fixture.epoch.addingTimeInterval(5), uid: Fixture.uid)
+                .matches(approved))
+        XCTAssertFalse(
+            ProcessIdentity(startTime: Fixture.epoch, uid: Fixture.otherUID).matches(approved))
+    }
+
+    /// Runs against the live machine, because a check that only ever sees fixtures would
+    /// not catch the `kinfo_proc` field being read from the wrong offset. Both directions
+    /// are asserted: the real start time must pass, a wrong one must not.
+    func testLiveIdentityCheckAgreesWithTheRunningProcess() throws {
+        let sender = POSIXSignalSender()
+        let table = try SysctlProcessEnumerator().enumerateProcesses()
+        let me = try XCTUnwrap(table.first { $0.pid == getpid() })
+        let truth = ProcessIdentity(startTime: me.startTime, uid: me.uid)
+
+        XCTAssertEqual(sender.verifyIdentity(ofPID: getpid(), matches: truth), .matches)
+        XCTAssertEqual(
+            sender.verifyIdentity(
+                ofPID: getpid(),
+                matches: ProcessIdentity(
+                    startTime: me.startTime.addingTimeInterval(-86400), uid: me.uid)),
+            .differs)
+        // PID 0 is the kernel and can never be a target, so it must not read as a match.
+        XCTAssertNotEqual(sender.verifyIdentity(ofPID: 0, matches: truth), .matches)
+    }
+
+    /// A signal-specific delivery failure must not be papered over: SIGTERM succeeding
+    /// and SIGKILL failing is a distinct, reportable outcome.
+    func testFailedSIGKILLDeliveryIsReportedRatherThanTreatedAsSuccess() {
+        let signaller = FakeSignaller(
+            alive: [600], undeliverableSignals: [600: [SIGKILL]])
+        let result = reaper(signaller: signaller).terminate(
+            Fixture.parent(pid: 600, zombieCount: 500), policy: policy)
+
+        XCTAssertEqual(result.outcome, .signalFailed(signal: SIGKILL))
+        XCTAssertEqual(result.signalsSent, [SIGTERM])
+        XCTAssertFalse(result.outcome.succeeded)
+    }
+    // MARK: - Coverage of rules that defaults would otherwise hide
+
+    /// Every other test runs with the default idle threshold, which lets a mutant reading
+    /// `CleanupPolicy.defaultSessionIdleThreshold` instead of `policy.sessionIdleThreshold`
+    /// survive undetected. This pins the *configured* value: a session idle for 90 minutes
+    /// protects its parent under the 2 h default but not under a 1 h setting.
+    func testTheConfiguredIdleThresholdIsUsedRatherThanTheDefault() {
+        let parent = Fixture.parent(
+            pid: 600, zombieCount: 500,
+            sessionChildCount: 1, sessionChildPIDs: [601],
+            sessionIdleSeconds: 90 * 60, sessionLogAgeSeconds: 90 * 60)
+        let snapshot = Fixture.snapshot(offenders: [parent])
+
+        let underDefault = reaper().selectTargets(
+            in: snapshot,
+            policy: CleanupPolicy(
+                minimumZombiesPerParent: 100, allowedNamePatterns: ["agency"],
+                terminationGracePeriod: 2))
+        XCTAssertTrue(underDefault.targets.isEmpty)
+
+        let underShorterThreshold = reaper().selectTargets(
+            in: snapshot,
+            policy: CleanupPolicy(
+                minimumZombiesPerParent: 100, allowedNamePatterns: ["agency"],
+                terminationGracePeriod: 2, sessionIdleThreshold: 3600))
+        XCTAssertEqual(underShorterThreshold.targets.map(\.pid), [600])
+    }
+
+    /// PID 0 is the kernel. Covered deterministically here rather than relying on the
+    /// live process table, so that narrowing the guard to `pid == 1` fails the suite.
+    func testNeverTargetsPIDZero() {
+        let snapshot = Fixture.snapshot(
+            offenders: [Fixture.parent(pid: 0, name: "kernel_task", zombieCount: 5000)])
+        let selection = reaper().selectTargets(in: snapshot, policy: policy)
+
+        XCTAssertTrue(selection.targets.isEmpty)
+        XCTAssertEqual(selection.skipped.first?.reason, .initProcess)
+    }
 }

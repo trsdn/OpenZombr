@@ -19,6 +19,10 @@ public final class Preferences: ObservableObject {
     public static let defaultPollInterval: TimeInterval = 60
     public static let minimumPollInterval: TimeInterval = 5
     public static let maximumPollInterval: TimeInterval = 3600
+    public static let minimumSessionIdleHours: Double = 0.5
+    /// Bounded by the log reader's horizon, not chosen independently: a threshold the
+    /// reader cannot reach would disable cleanup without any visible sign.
+    public static let maximumSessionIdleHours = SessionLogReader.defaultHorizon / 3600
 
     private let defaults: UserDefaults
 
@@ -95,8 +99,20 @@ public final class Preferences: ObservableObject {
     }
 
     /// Hours a session child must be idle before its parent is eligible again.
+    /// Clamped to what the log reader can actually prove. Above its horizon the log
+    /// signal can never report enough age, and because idleness requires CPU *and* log
+    /// evidence to agree, a larger value would switch cleanup off without saying so.
     @Published public var sessionIdleHours: Double {
-        didSet { defaults.set(sessionIdleHours, forKey: Key.sessionIdleHours) }
+        didSet {
+            let clamped = min(
+                max(sessionIdleHours, Self.minimumSessionIdleHours),
+                Self.maximumSessionIdleHours)
+            if clamped != sessionIdleHours {
+                sessionIdleHours = clamped
+                return
+            }
+            defaults.set(sessionIdleHours, forKey: Key.sessionIdleHours)
+        }
     }
 
     @Published public var notificationsEnabled: Bool {
@@ -126,9 +142,14 @@ public final class Preferences: ObservableObject {
             defaults.object(forKey: Key.notificationsEnabled) as? Bool ?? true
         self.spareActiveSessions =
             defaults.object(forKey: Key.spareActiveSessions) as? Bool ?? true
-        self.sessionIdleHours =
-            defaults.object(forKey: Key.sessionIdleHours) as? Double
-            ?? CleanupPolicy.defaultSessionIdleThreshold / 3600
+        // Clamped here as well as in `didSet`, because initialisation does not observe:
+        // a value stored by an older build could otherwise sit outside the range forever.
+        self.sessionIdleHours = min(
+            max(
+                defaults.object(forKey: Key.sessionIdleHours) as? Double
+                    ?? CleanupPolicy.defaultSessionIdleThreshold / 3600,
+                Self.minimumSessionIdleHours),
+            Self.maximumSessionIdleHours)
     }
 
     public var thresholds: Thresholds {

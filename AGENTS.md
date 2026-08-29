@@ -29,7 +29,7 @@ Sources/OpenZombr/            library target OpenZombrKit
   Sampling/                   sysctl process table reader and sampler
   UI/                         menu bar content, preferences window
   Info.plist                  LSUIElement=true; `__VERSION__` substituted at bundle time
-Sources/OpenZombrApp/         executable entry point, plus `--probe`
+Sources/OpenZombrApp/         entry point; `--probe`, `--idle-watch`, `--log-probe`, `--login-item`
 Tests/OpenZombrTests/         unit tests
 ```
 
@@ -95,6 +95,11 @@ must remain proven by tests:
   of a 253 MB log is not affordable on a machine already out of process slots. Heartbeat
   classification is a denylist: an unrecognised line counts as work and protects, and a
   file with no parseable timestamp makes the whole directory unknown.
+* A PID is not an identity. Every target's start time and uid are re-read from the kernel
+  and compared with the approved ones immediately before **each** signal, including before
+  the SIGKILL escalation — the grace period is itself a reuse window, and the machine hands
+  out 160 PIDs per 20 s while idle. An identity that differs, or one that cannot be read,
+  aborts the termination; unreadable must never be treated as unchanged.
 * Zombies themselves are never signalled.
 * Only parents at or above the zombie threshold are targeted.
 * The denylist overrides the allowlist, and an empty allowlist matches nothing.

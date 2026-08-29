@@ -10,6 +10,21 @@ public struct MenuBarContentView: View {
     }
 
     public var body: some View {
+        // A stale reading is announced before the numbers, not after them. The failure
+        // mode this app must not have is looking healthy while blind: its sister app was
+        // dead for a day and a half without anyone noticing.
+        if model.isStale() {
+            if let staleness = model.staleness() {
+                Text("⚠︎ Messung veraltet – letzte vor \(Formatting.age(staleness))")
+            } else {
+                Text("⚠︎ Keine erfolgreiche Messung")
+            }
+            if let error = model.lastError {
+                Text("Fehler: \(error)")
+            }
+            Divider()
+        }
+
         if let snapshot = model.snapshot {
             Text(
                 "Prozesse: \(Formatting.count(snapshot.totalProcesses)) / "

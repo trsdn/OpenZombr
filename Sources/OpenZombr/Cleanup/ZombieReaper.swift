@@ -12,6 +12,10 @@ public enum ReapOutcome: Sendable, Equatable {
     case survived
     /// The process disappeared on its own before anything was sent.
     case alreadyGone
+    /// The process at that PID is no longer the one the safety rules approved, so it is
+    /// not signalled. Distinct from `alreadyGone`, which is the benign case of a target
+    /// that simply exited: this one means a *different* process now holds the number.
+    case identityChanged
     /// A signal could not be delivered at all.
     case signalFailed(signal: Int32)
 
@@ -21,6 +25,7 @@ public enum ReapOutcome: Sendable, Equatable {
         case .terminatedBySIGKILL: return "durch SIGKILL beendet"
         case .survived: return "überlebt (nicht beendet)"
         case .alreadyGone: return "war bereits beendet"
+        case .identityChanged: return "PID gehört inzwischen einem anderen Prozess"
         case .signalFailed(let signal): return "Signal \(signal) fehlgeschlagen"
         }
     }
@@ -28,7 +33,7 @@ public enum ReapOutcome: Sendable, Equatable {
     public var succeeded: Bool {
         switch self {
         case .terminatedBySIGTERM, .terminatedBySIGKILL, .alreadyGone: return true
-        case .survived, .signalFailed: return false
+        case .survived, .signalFailed, .identityChanged: return false
         }
     }
 
@@ -39,6 +44,7 @@ public enum ReapOutcome: Sendable, Equatable {
         case .terminatedBySIGKILL: return "sigkill"
         case .survived: return "survived"
         case .alreadyGone: return "already-gone"
+        case .identityChanged: return "identity-changed"
         case .signalFailed: return "signal-failed"
         }
     }
@@ -236,11 +242,24 @@ public struct ZombieReaper: Sendable {
     /// may well meet a better-behaved leaking parent, and a clean shutdown is always
     /// preferable. Escalation happens only after the grace period, and which signal
     /// actually worked is recorded.
+    ///
+    /// Every safety rule was evaluated against a `ZombieParent` captured in a *past*
+    /// snapshot, and a PID is not an identity — Darwin hands them out sequentially and
+    /// wraps. So the identity is re-read from the kernel immediately before each signal,
+    /// including before the escalation, because the grace period is itself a window in
+    /// which the target can exit and its number be reissued. Selection may be minutes old;
+    /// this check is microseconds old.
     public func terminate(_ parent: ZombieParent, policy: CleanupPolicy) -> ReapResult {
         var sent: [Int32] = []
+        let approved = ProcessIdentity(startTime: parent.startTime, uid: parent.uid)
 
         guard signaller.isAlive(pid: parent.pid) else {
             return ReapResult(parent: parent, outcome: .alreadyGone, signalsSent: sent)
+        }
+        // Unreadable is not "unchanged". Refusing to signal costs one poll interval;
+        // signalling the wrong process costs the user their work.
+        guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
+            return ReapResult(parent: parent, outcome: .identityChanged, signalsSent: sent)
         }
 
         guard signaller.send(signal: SIGTERM, to: parent.pid) else {
@@ -254,6 +273,12 @@ public struct ZombieReaper: Sendable {
         sleeper.sleep(for: policy.terminationGracePeriod)
         if !signaller.isAlive(pid: parent.pid) {
             return ReapResult(parent: parent, outcome: .terminatedBySIGTERM, signalsSent: sent)
+        }
+
+        // The grace period is the widest reuse window in the whole routine: the target was
+        // just asked to exit, so it is more likely than usual to have done so.
+        guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
+            return ReapResult(parent: parent, outcome: .identityChanged, signalsSent: sent)
         }
 
         guard signaller.send(signal: SIGKILL, to: parent.pid) else {

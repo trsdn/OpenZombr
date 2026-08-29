@@ -69,4 +69,29 @@ final class PreferencesTests: XCTestCase {
         XCTAssertFalse(
             preferences.cleanupPolicy.permits(Fixture.parent(pid: 10, zombieCount: 5000)))
     }
+    /// A session idle threshold beyond the log reader's horizon can never be reached, so
+    /// storing one would switch cleanup off without any visible sign. It is clamped both
+    /// when set and when read back from a value an older build may have stored.
+    func testSessionIdleHoursIsClampedToWhatTheLogReaderCanProve() {
+        let defaults = UserDefaults.makeTransient()
+        let preferences = Preferences(defaults: defaults)
+
+        preferences.sessionIdleHours = 24
+        XCTAssertEqual(preferences.sessionIdleHours, Preferences.maximumSessionIdleHours)
+        preferences.sessionIdleHours = 0.1
+        XCTAssertEqual(preferences.sessionIdleHours, Preferences.minimumSessionIdleHours)
+
+        defaults.set(24.0, forKey: "sessionIdleHours")
+        XCTAssertEqual(
+            Preferences(defaults: defaults).sessionIdleHours,
+            Preferences.maximumSessionIdleHours)
+    }
+
+    /// The bound is derived from the reader rather than written out twice, so the two
+    /// cannot drift apart.
+    func testMaximumSessionIdleHoursTracksTheReaderHorizon() {
+        XCTAssertEqual(
+            Preferences.maximumSessionIdleHours, SessionLogReader.defaultHorizon / 3600)
+        XCTAssertEqual(SessionLogReader().horizon, SessionLogReader.defaultHorizon)
+    }
 }

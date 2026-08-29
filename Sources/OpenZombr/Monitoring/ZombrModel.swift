@@ -10,6 +10,27 @@ public final class ZombrModel: ObservableObject {
     @Published public private(set) var lastError: String?
     @Published public private(set) var lastCleanup: CleanupReport?
     @Published public private(set) var isCleaning = false
+    /// When the last sample actually succeeded.
+    ///
+    /// A failing poll leaves `snapshot` untouched, so without this the UI would keep
+    /// displaying the last healthy reading forever and a watchdog that had gone blind
+    /// would look exactly like a watchdog reporting good news. The sister app died
+    /// unnoticed for a day and a half; being silently wrong is the failure mode that
+    /// matters here.
+    @Published public private(set) var lastSuccessfulPoll: Date?
+
+    /// How long ago the last successful sample was, or `nil` if there has never been one.
+    public func staleness(now: Date = Date()) -> TimeInterval? {
+        lastSuccessfulPoll.map { now.timeIntervalSince($0) }
+    }
+
+    /// A reading is stale once it is older than several poll intervals — long enough not
+    /// to flag a single skipped timer tick, short enough that a wedged watchdog is
+    /// visible well within the daily cadence of the leak.
+    public func isStale(now: Date = Date()) -> Bool {
+        guard let lastSuccessfulPoll else { return snapshot != nil }
+        return now.timeIntervalSince(lastSuccessfulPoll) > preferences.pollInterval * 3 + 10
+    }
 
     public let preferences: Preferences
     public let log: EvidenceCSVLog
@@ -104,6 +125,7 @@ public final class ZombrModel: ObservableObject {
 
             forecast = estimator.record(snapshot)
             severity = snapshot.severity(thresholds: preferences.thresholds)
+            lastSuccessfulPoll = Date()
 
             let alert = monitor.evaluate(snapshot)
             log.append(snapshot: snapshot, forecast: forecast)
@@ -112,7 +134,12 @@ public final class ZombrModel: ObservableObject {
                 notifier.notifyThreshold(alert, forecast: forecast)
             }
 
-            if alert?.severity == .critical || severity == .critical {
+            // Only the hysteresis-confirmed severity may reach the destructive path. The
+            // raw `severity` published above drives the menu bar, where reacting to a
+            // single sample is merely noisy; here it would let one spurious reading send
+            // SIGKILL. `ThresholdMonitor` requires `confirmationSamples` consecutive
+            // samples, which is the entire reason it exists.
+            if monitor.currentSeverity == .critical {
                 maybeAutoCleanup(snapshot: snapshot)
             }
         } catch {
@@ -137,9 +164,21 @@ public final class ZombrModel: ObservableObject {
     // MARK: - Cleanup
 
     /// Manual "Jetzt aufräumen". Runs exactly the same routine as auto-cleanup.
+    ///
+    /// Takes a fresh sample rather than reusing `snapshot`. The poll interval can be set
+    /// as high as an hour, so the stored snapshot may name processes that exited long
+    /// ago; the reaper's identity check would then refuse every target and the button
+    /// would appear broken. Sampling here costs one sysctl and makes the decision current.
     public func cleanupNow() {
-        guard let snapshot else { return }
-        runCleanup(snapshot: snapshot)
+        if let fresh = try? sampler.sample(idleTracker: idleTracker) {
+            snapshot = fresh
+            lastSuccessfulPoll = Date()
+            runCleanup(snapshot: fresh)
+        } else if let snapshot {
+            // Sampling failed. Falling back to the stored snapshot is still safe because
+            // the reaper re-verifies each target's identity before signalling it.
+            runCleanup(snapshot: snapshot)
+        }
     }
 
     private func runCleanup(snapshot: ZombieSnapshot) {

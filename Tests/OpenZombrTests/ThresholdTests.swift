@@ -143,4 +143,19 @@ final class ThresholdTests: XCTestCase {
         XCTAssertEqual(alert.thresholdFraction, 0.75)
         XCTAssertEqual(alert.snapshot.usageFraction, 0.8, accuracy: 0.0001)
     }
+    /// The gap that used to let a single sample reach the destructive path: the raw
+    /// snapshot severity is critical immediately, while the confirmed severity is not.
+    /// Auto-cleanup must follow the second, because it sends SIGKILL.
+    func testSingleSpikeIsCriticalRawButNotYetConfirmed() {
+        let thresholds = Thresholds()
+        var monitor = ThresholdMonitor(thresholds: thresholds)
+        let spike = Fixture.snapshot(totalProcesses: 3960, zombieCount: 3800, limit: 4000)
+
+        XCTAssertEqual(spike.severity(thresholds: thresholds), .critical)
+        monitor.evaluate(spike)
+        XCTAssertNotEqual(monitor.currentSeverity, .critical)
+
+        monitor.evaluate(spike)
+        XCTAssertEqual(monitor.currentSeverity, .critical)
+    }
 }

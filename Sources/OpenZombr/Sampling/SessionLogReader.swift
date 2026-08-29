@@ -123,8 +123,14 @@ public struct SessionLogReader: Sendable {
     /// bound and therefore still errs towards "active".
     public let byteBudget: Int
 
+    /// The furthest back a scan will look, and therefore the largest idle age this
+    /// reader can ever report. A session idle threshold above it could never be reached,
+    /// which would disable cleanup silently rather than visibly — so the preference range
+    /// is derived from this constant instead of being written out separately.
+    public static let defaultHorizon: TimeInterval = 6 * 3600
+
     public init(
-        horizon: TimeInterval = 6 * 3600,
+        horizon: TimeInterval = SessionLogReader.defaultHorizon,
         chunkSize: Int = 64 * 1024,
         byteBudget: Int = 4 * 1024 * 1024
     ) {

@@ -546,10 +546,21 @@ terminal, printing the raw `SMAppService.Status` next to the wording:
 `requiresApproval` is reported as `wirksam=nein`. In that state the item exists but macOS
 will not start it, which looks like success until the reboot that disproves it.
 
-**Auto-cleanup is off by default, and you should leave it off until you have watched
-`--idle-watch` on your own machine.** The guard is tuned for one specific leaking wrapper;
+**Auto-cleanup is on by default.** That is deliberate — the leak recurs roughly daily and
+an unattended machine is exactly the case this app exists for — but it means the app will
+send `SIGKILL` without being asked, so **watch `--idle-watch` on your own machine before
+you trust it**, and turn the switch off in the preferences if your process tree does not
+look like the one it was tuned for. The guard is tuned for one specific leaking wrapper;
 every safety rule in it was added because a measurement showed the previous set was
 insufficient.
+
+Before any signal is sent, the target's identity is re-read from the kernel and compared
+with the one the safety rules approved — start time and uid, not just the PID. Selection
+runs against a snapshot that may be up to one poll interval old, and this machine hands
+out 160 PIDs every 20 seconds while idle, so a PID alone is not an identity. The check is
+repeated before the `SIGKILL` escalation, because the grace period is itself a window in
+which the target can exit and its number be reissued. An identity that differs, or that
+cannot be read at all, aborts the termination and is logged as `identity-changed`.
 
 ## Continuous integration
 
