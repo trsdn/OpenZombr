@@ -67,7 +67,11 @@ find_signing_identity() {
     return 0
   fi
   local identities label identity
-  identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+  # `find-identity -v` still lists certificates it knows to be unusable, tagging them with
+  # a `(CSSMERR_...)` reason — a revoked "Apple Development" cert was picked ahead of a
+  # perfectly good "Developer ID Application" one and failed the build outright. Drop the
+  # tagged lines so an unusable certificate is treated as absent rather than preferred.
+  identities="$(security find-identity -v -p codesigning 2>/dev/null | grep -v 'CSSMERR_' || true)"
   for label in "Apple Development" "Developer ID Application"; do
     identity="$(printf '%s\n' "$identities" | grep "$label" | head -1 | sed 's/.*"\(.*\)"/\1/' || true)"
     if [[ -n "$identity" ]]; then
