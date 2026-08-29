@@ -125,6 +125,66 @@ final class SessionLogContentTests: XCTestCase {
         XCTAssertEqual(selection.targets.map(\.pid), [86183])
     }
 
+    // MARK: - Aggregation across the files of one directory
+
+    /// The 86183 directory held two files: the wrapper's own log, which carried nothing but
+    /// the leak's heartbeat, and the session child's `process-*.log`. At the moment the
+    /// evidence row was written both were quiet, and the directory must read idle — a single
+    /// silent-but-present wrapper log must not be able to hide a working child, and a quiet
+    /// child must not be outvoted into activity by the heartbeat next to it.
+    func testAQuietWrapperLogNextToAQuietChildLogReadsIdle() throws {
+        let now = Date()
+        var wrapper = [
+            line(9 * 3600, "DEBUG Forwarding event for session 4da0d54f: assistant.turn_end",
+                 from: now)
+        ]
+        for offset in stride(from: 8.5 * 3600, through: 3, by: -30) {
+            wrapper += heartbeat(offset, from: now)
+        }
+        try write("agency_copilot_20260828_181243_86183.log", wrapper)
+
+        var child = [
+            line(7.7 * 3600, "DEBUG Forwarding event for session 4da0d54f: assistant.turn_end",
+                 from: now)
+        ]
+        for offset in stride(from: 7.5 * 3600, through: 3, by: -30) {
+            child += heartbeat(offset, from: now)
+        }
+        try write("process-1787933564248-86242.log", child)
+
+        let measured = try XCTUnwrap(age(now: now))
+        XCTAssertGreaterThan(measured, 2 * 3600)
+    }
+
+    /// The inverse, and the reason the aggregation is `max` rather than `min`: the log
+    /// directory is the *session child's* `--log-dir`, so its `process-*.log` is the primary
+    /// evidence of whether the session is doing anything. A child streaming real work keeps
+    /// the wrapper protected even though the wrapper's own log has been heartbeat-only for
+    /// hours — that quietness is normal, the wrapper never logs the session's work itself.
+    func testAWorkingChildLogProtectsTheWrapperDespiteAHeartbeatOnlyWrapperLog() throws {
+        let now = Date()
+        var wrapper = [
+            line(9 * 3600, "DEBUG Forwarding event for session 4da0d54f: assistant.turn_end",
+                 from: now)
+        ]
+        for offset in stride(from: 8.5 * 3600, through: 3, by: -30) {
+            wrapper += heartbeat(offset, from: now)
+        }
+        try write("agency_copilot_20260828_181243_86183.log", wrapper)
+        try write(
+            "process-1787933564248-86242.log",
+            [
+                line(20, "DEBUG Forwarding event for session 4da0d54f: "
+                       + "assistant.streaming_delta", from: now)
+            ])
+
+        let measured = try XCTUnwrap(age(now: now))
+        XCTAssertLessThan(
+            measured, 60,
+            "a session child still streaming work must keep its wrapper protected, however "
+                + "quiet the wrapper's own log has become")
+    }
+
     /// The hourly policy self-fetch, and the session event it emits downstream. Both tick
     /// without any user, and one line an hour is enough to hold the age below the two hour
     /// threshold forever. Between 02:00 and 09:25 on the day of the incident these eight

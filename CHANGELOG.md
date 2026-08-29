@@ -28,7 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and 09:25 on the day of the incident those eight lines were the only non-heartbeat
     content in the entire log — enough on their own to hold the age below two hours forever.
   - OTLP *trace* batches are deliberately not heartbeats: they carry span names such as
-    `execute_tool bash` and were entirely absent from the dead wrapper's log.
+    `execute_tool bash`. Counted over the dead wrapper's whole log and split at the last
+    real work: 463 `signal=/v1/metrics` pushes and 0 trace batches in the 7 h 39 min of
+    dead time that followed, against 1128 trace batches before it.
+  - Files within one log directory are combined with `max`: any file showing work keeps the
+    session active, because the directory is the session *child's* `--log-dir` and its
+    `process-*.log` is the primary evidence. Replaying the incident directory at its capture
+    instant shows both files heartbeat-only, so this does not reintroduce the defect.
 
 ### Added
 

@@ -372,12 +372,42 @@ Three properties of the reader matter, and each is pinned by a test in
   02:00 and 09:25 on the day of the incident those eight hourly lines were the only
   non-heartbeat content in the entire 253 MB log — and one line an hour is enough to hold
   the measured age permanently below a two hour threshold. Conversely OTLP *trace* batches
-  are deliberately **not** heartbeats: they carry span names such as `execute_tool bash`,
-  appear only when work happens, and were entirely absent from the dead wrapper's log.
+  are deliberately **not** heartbeats: they carry span names such as `execute_tool bash` and
+  appear only when work happens. Counted over the dead wrapper's whole 6140-line log, split
+  at the last real work at `01:42:34`: the 7 h 39 min of dead time that followed contained
+  **463 `signal=/v1/metrics` pushes and 0 trace batches** — the last two trace batches landed
+  at `01:42:37`, three seconds after the final turn ended. Before that cut the same file held
+  1128 trace batches. The two signals separate cleanly rather than narrowly, and that is the
+  measurement the criterion rests on, not an assumption.
 
 The real work in that session stopped at `2026-08-29T01:42:34`. Everything after it was
 heartbeat. That is 7.65 h before the measurement — which is what `cpu_idle=27534` had been
 saying all along.
+
+#### Aggregating across the files of one directory
+
+A session's log directory holds more than one file, and they can disagree. In the incident
+directory `agency_copilot_*.log` is the wrapper's own log and `process-*.log` belongs to the
+session child. The rule is:
+
+* **Any file showing work makes the whole directory active** (`max` over the per-file
+  bounds). The directory is the *session child's* `--log-dir`, so its `process-*.log` is the
+  primary evidence of whether the session is doing anything, and the wrapper's own log being
+  quiet is the normal case — the wrapper never logs the session's work itself. Taking the
+  oldest file instead would let a wrapper be reaped out from under a session that is visibly
+  streaming output.
+* **One file the reader cannot interpret at all makes the whole directory unknown**, which
+  protects. Absence of evidence must never read as evidence of idleness.
+* Empty files are skipped rather than counted as unreadable, or a zero-byte file would
+  protect its wrapper forever.
+
+This does not weaken the fix, and the difference is measurable rather than a matter of
+opinion. Replaying the archived incident directory truncated at the capture instant
+`2026-08-29T09:21:47Z` reports *both* files as heartbeat-only for at least six hours: the
+child's log had also been silent since `01:42:34`. The wrapper would have been offered as a
+candidate. The same directory reads "work under 1 min ago" *today* only because the orphaned
+child was adopted by `launchd` after the wrapper was killed and now serves a live session —
+which is precisely the case that must protect.
 
 One earlier trap is still worth stating: the telemetry children that cause the leak write
 their queue files into the same log directory. Session 44194 was finished with its process
