@@ -297,16 +297,92 @@ process burns the cycles. In the same measurement:
 | 44194 (finished) | idle | 559 s — idle |
 
 OpenZombr therefore reads `--log-dir` from the session child's arguments via
-`KERN_PROCARGS2` and takes the newest write in that directory. **Both signals must agree
-that the session is finished before anything is reaped.** Either one reporting recent
-activity — or being unreadable — keeps the parent protected, so a single mis-derived
-threshold cannot on its own cause a kill.
+`KERN_PROCARGS2`. **Both signals must agree that the session is finished before anything is
+reaped.** Either one reporting recent activity — or being unreadable — keeps the parent
+protected, so a single mis-derived threshold cannot on its own cause a kill.
 
-One trap is worth stating explicitly: the telemetry children that *cause* the leak write
+#### The log signal reads content, not `mtime` — and this took a second incident to learn
+
+The first version of this signal took the newest write in the log directory. That version
+was measured to be worthless, and worse than worthless: it neutralised the whole feature.
+
+On 2026-08-29 the `agency` wrapper pid 86183 was 17 h 12 m old and held **1022 zombies at
+39 % of `kern.maxprocperuid`**. The app polled it for hours and never once offered it as a
+candidate. From the evidence log:
+
+```
+…,86183,agency,1019,cpu_idle=27534;log_age=4,poll,
+…,86183,agency,1019,cpu_idle=27534;log_age=4,cleanup,no-targets
+```
+
+CPU said 7.6 h idle, far past the two hour threshold. The log said 4 s. Both signals must
+agree, so the log signal alone protected it, permanently. The fresh timestamp came from the
+wrapper's own log file, and everything being written to it was this:
+
+```
+09:23:13.499Z DEBUG agency::send_telemetry_events: telem periodic flush: queue empty, nothing to commit
+09:23:13.505Z DEBUG agency::send_telemetry_events: telem flush: spawned detached child pid=32302
+09:24:13.503Z DEBUG agency::send_telemetry_events: telem flush: spawned detached child pid=32512
+```
+
+Every `spawned detached child` line **is** one of the zombies this app exists to remove.
+Once every 30 s, the leak refreshed the very timestamp that was supposed to expose it as
+dead. `queue empty, nothing to commit` — there was not even any telemetry to send; only the
+flush timer was running.
+
+This is the same failure class as the CPU signal before it, and the `telemetry_queues/`
+filter before that: *the leak generates the signal that protects the leaker*. But the
+direction is worse. CPU made an active session look idle, which is unsafe but visible. Here
+a session dead for 17 h looked active forever, which is silent and total.
+
+The file layer does not carry the information, so the signal is derived from the log
+**content**. Scanning the same directory as of the moment the evidence above was captured:
+
+```
+$ OpenZombr --log-probe <session-log-dir> 2026-08-29T09:21:47Z
+  agency_copilot_…86183.log — 1171 KiB, mtime-Alter unter 1 Min. → nur Heartbeat seit mindestens 6 Std. [17.0 ms]
+  process-…-86242.log      — 247318 KiB, mtime-Alter unter 1 Min. → nur Heartbeat seit mindestens 6 Std. [60.3 ms]
+```
+
+against a live session on the same machine:
+
+```
+  agency_copilot_…31944.log —    73 KiB, mtime-Alter 1 Min. → Arbeit vor 11 Min. [3.7 ms]
+  process-…-32002.log       —  4485 KiB, mtime-Alter 1 Min. → Arbeit vor  1 Min. [5.3 ms]
+```
+
+Three properties of the reader matter, and each is pinned by a test in
+`SessionLogContentTests`:
+
+* **It is a denylist of known heartbeats, never an allowlist of work.** Anything the reader
+  does not recognise counts as real work and protects. These formats come from foreign code
+  and will change; when they do, heartbeats stop matching and the guard becomes more
+  cautious, never less. A file with no parseable timestamp at all is `unknown`, and one
+  unknown file makes the whole directory unknown.
+* **It reads backwards from EOF and stops at the first non-heartbeat line.** The dead
+  session's `process-*.log` was **253 MB**; a full scan is not affordable on a machine that
+  is by definition already out of process slots. 300 lines of heartbeat-only tail cover 75
+  minutes, so reaching past the two hour threshold costs tens of kilobytes. The 253 MB file
+  above was judged in 60 ms, against a 60 s poll interval. A hard byte budget bounds the
+  pathological case, and exhausting it reports the oldest line actually seen — an upper
+  bound on the last activity, which again errs towards "active".
+* **What counts as a heartbeat was found by measurement, not by reading the code.** The
+  non-obvious entry is `managed_settings_resolved`. The hourly policy self-fetch emits it
+  as a *session event*, so it carries none of the policy module's own markers. Between
+  02:00 and 09:25 on the day of the incident those eight hourly lines were the only
+  non-heartbeat content in the entire 253 MB log — and one line an hour is enough to hold
+  the measured age permanently below a two hour threshold. Conversely OTLP *trace* batches
+  are deliberately **not** heartbeats: they carry span names such as `execute_tool bash`,
+  appear only when work happens, and were entirely absent from the dead wrapper's log.
+
+The real work in that session stopped at `2026-08-29T01:42:34`. Everything after it was
+heartbeat. That is 7.65 h before the measurement — which is what `cpu_idle=27534` had been
+saying all along.
+
+One earlier trap is still worth stating: the telemetry children that cause the leak write
 their queue files into the same log directory. Session 44194 was finished with its process
-log 612 s old, while a `telemetry_queue….jsonl.delivered` beside it was only 559 s old.
-Counting those would let the leak keep the leaking wrapper permanently protected, exactly
-inverting the guard, so files whose names contain `telemetry` are ignored.
+log 612 s old, while a `telemetry_queue….jsonl.delivered` beside it was only 559 s old, so
+files whose names contain `telemetry` are ignored outright.
 
 ### Auditing the guard before trusting it: `--idle-watch`
 
@@ -326,6 +402,17 @@ found with this mode rather than by reasoning.
 Read it as: a wrapper you recognise as a live session must say `AKTIV (geschützt)`. If one
 of your live sessions is ever released, do not enable auto-cleanup — send the output as a
 bug report instead.
+
+Its companion is `--log-probe`, which shows what the log reader makes of a single session
+log directory, file by file, with the `mtime` it replaced beside each verdict and the cost
+of the scan:
+
+```
+OpenZombr --log-probe <Verzeichnis> [ISO-Zeitpunkt]
+```
+
+The optional instant judges an archived directory as of the moment it was captured, which
+is how the 2026-08-29 incident above is replayed on demand.
 
 #### Beobachtet auf der betroffenen Maschine
 

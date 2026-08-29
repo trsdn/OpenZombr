@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The log signal could never release the process this app was built for.** Read as the
+  newest write in the session's `--log-dir`, it was refreshed every 30 s by the leak's own
+  `telem flush: spawned detached child pid=…` heartbeat — each of those lines being one of
+  the zombies to be cleaned up. Measured on 2026-08-29: `agency` wrapper 86183, 17 h old,
+  1022 zombies at 39 % of `kern.maxprocperuid`, CPU idle for 7.6 h, log age reported as
+  4 s, never offered as a candidate. Since both signals must agree, the log signal alone
+  neutralised the whole cleanup feature. The age is now derived from the log *content*: the
+  file tail is read backwards from EOF and the scan stops at the first line that is not a
+  known heartbeat. The 253 MB log of that session is judged in 60 ms against a 60 s poll
+  interval, and replaying the incident directory at its capture instant now reports "only
+  heartbeat for at least 6 h" instead of 4 s.
+  - Classification is a denylist of known heartbeats, so an unrecognised format counts as
+    real work and protects; a file with no parseable timestamp is unknown, and one unknown
+    file makes the whole directory unknown.
+  - `managed_settings_resolved` is treated as a heartbeat. The hourly policy self-fetch
+    emits it as a session event without the policy module's own markers, and between 02:00
+    and 09:25 on the day of the incident those eight lines were the only non-heartbeat
+    content in the entire log — enough on their own to hold the age below two hours forever.
+  - OTLP *trace* batches are deliberately not heartbeats: they carry span names such as
+    `execute_tool bash` and were entirely absent from the dead wrapper's log.
+
 ### Added
+
+- `--log-probe <Verzeichnis> [ISO-Zeitpunkt]`, which prints the log reader's verdict for
+  each file in a session log directory alongside the `mtime` it replaced and the cost of
+  the scan. The optional instant judges an archived directory as of its capture time.
 
 - Liveness-based protection: a parent that still has a live child running a *different*
   executable is never signalled. Ancestor protection only applies while the app is a

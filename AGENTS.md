@@ -87,6 +87,14 @@ must remain proven by tests:
   work to short-lived grandchildren, so one running builds flat out measured 0.0000 %
   across eight consecutive samples. Files matching `telemetry` must stay excluded from the
   log age, because the leak itself writes them into the session's log directory.
+* **The log age must never be derived from `mtime`.** The leak writes its own heartbeat
+  into the session log every 30 s, so the file timestamp reports a wrapper that has been
+  dead for 17 h as one second old — measured against pid 86183 holding 1022 zombies, which
+  the app consequently never offered as a candidate. The age comes from the log *content*,
+  read backwards from EOF and stopping at the first non-heartbeat line, because a full scan
+  of a 253 MB log is not affordable on a machine already out of process slots. Heartbeat
+  classification is a denylist: an unrecognised line counts as work and protects, and a
+  file with no parseable timestamp makes the whole directory unknown.
 * Zombies themselves are never signalled.
 * Only parents at or above the zombie threshold are targeted.
 * The denylist overrides the allowlist, and an empty allowlist matches nothing.

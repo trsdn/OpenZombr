@@ -425,6 +425,10 @@ final class SessionLogSignalTests: XCTestCase {
     /// their files would let the leak keep the leaking wrapper permanently protected.
     /// Observed directly: session 44194 was finished, its process log 612 s old, while a
     /// telemetry file beside it was 559 s old.
+    ///
+    /// Note that the age now comes from the log *content*, not from `mtime` — see
+    /// `SessionLogContentTests` for why `mtime` had to go — so the fixture carries real
+    /// lines instead of empty files with back-dated timestamps.
     func testTelemetryFilesDoNotCountAsSessionActivity() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("openzombr-log-\(UUID().uuidString)")
@@ -432,19 +436,25 @@ final class SessionLogSignalTests: XCTestCase {
             at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let old = Date().addingTimeInterval(-6 * 3600)
+        let now = Date()
+        let stamp = ISO8601DateFormatter()
+        stamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        stamp.timeZone = TimeZone(secondsFromGMT: 0)
+
         let session = directory.appendingPathComponent("process-1787938136833-44194.log")
         let telemetry = directory
             .appendingPathComponent("telemetry_queue.44137.1787938165269.0.jsonl.delivered")
-        try Data().write(to: session)
-        try Data().write(to: telemetry)
-        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: session.path)
+        try (stamp.string(from: now.addingTimeInterval(-6 * 3600))
+            + " [DEBUG] Forwarding event for session 4da0d54f: assistant.turn_end\n")
+            .write(to: session, atomically: true, encoding: .utf8)
+        try "{\"event\":\"telemetry written seconds ago\"}\n"
+            .write(to: telemetry, atomically: true, encoding: .utf8)
 
         let enumerator = StubProcessEnumerator(entries: [])
         enumerator.args = [44194: ["copilot", "--log-dir", directory.path]]
         let probe = SessionLogProbe(enumerator: enumerator)
 
-        let age = try XCTUnwrap(probe.logAgeSeconds(for: 44194, now: Date()))
+        let age = try XCTUnwrap(probe.logAgeSeconds(for: 44194, now: now))
         XCTAssertEqual(age, 6 * 3600, accuracy: 60,
                        "the fresh telemetry file must be ignored entirely")
     }

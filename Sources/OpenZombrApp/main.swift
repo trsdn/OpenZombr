@@ -47,6 +47,61 @@ if CommandLine.arguments.contains("--idle-watch") {
     exit(0)
 }
 
+/// `--log-probe <Verzeichnis> [ISO-Zeitpunkt]` prints what the content-based log reader
+/// makes of one session log directory, file by file, with the wall-clock cost of the scan.
+///
+/// This exists because the log signal is the one that silently neutralised the whole
+/// feature once already: `mtime` said 4 s while the session had been dead for 17 h. Being
+/// able to point the reader at a directory and see its verdict is how that is kept honest.
+if let index = CommandLine.arguments.firstIndex(of: "--log-probe") {
+    guard index + 1 < CommandLine.arguments.count else {
+        FileHandle.standardError.write(Data("usage: --log-probe <Verzeichnis>\n".utf8))
+        exit(2)
+    }
+    let directory = CommandLine.arguments[index + 1]
+    let reader = SessionLogReader()
+    // An optional ISO-8601 instant lets an archived directory be judged as of the moment
+    // it was captured, which is how the incident of 2026-08-29 is replayed.
+    let now =
+        (index + 2 < CommandLine.arguments.count
+            ? ISO8601DateFormatter().date(from: CommandLine.arguments[index + 2]) : nil) ?? Date()
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: directory))?.sorted() ?? []
+    print("log-probe: \(directory)")
+    for name in names {
+        let path = (directory as NSString).appendingPathComponent(name)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+            !isDirectory.boolValue
+        else { continue }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int) ?? 0
+        let modified =
+            ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate]
+                as? Date) ?? now
+        let ignored = SessionLogProbe.ignoredNameFragments.contains {
+            name.lowercased().contains($0)
+        }
+        let started = Date()
+        let bound = reader.activityBound(ofFileAt: path, now: now)
+        let elapsed = Date().timeIntervalSince(started)
+        let verdict: String
+        switch bound {
+        case .activity(let date):
+            verdict = "Arbeit vor \(Formatting.duration(now.timeIntervalSince(date)))"
+        case .noActivitySince(let date):
+            verdict = "nur Heartbeat seit mindestens "
+                + Formatting.duration(now.timeIntervalSince(date))
+        case .unknown:
+            verdict = "unbekannt (schützt)"
+        }
+        print(
+            "  \(name) — \(size / 1024) KiB"
+                + (ignored ? ", ignoriert" : "")
+                + ", mtime-Alter \(Formatting.duration(max(0, now.timeIntervalSince(modified))))"
+                + " → \(verdict) [\(String(format: "%.1f", elapsed * 1000)) ms]")
+    }
+    exit(0)
+}
+
 /// `--probe` prints one reading as text and exits, without starting the menu bar app.
 /// This is what you paste into a bug report, and it is how the reader gets verified from
 /// a terminal against `ps -Ao stat | grep -c '^Z'`.
