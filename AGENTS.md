@@ -42,6 +42,16 @@ Tests/OpenZombrTests/         unit tests
   icon, no window on launch.
 * **Never hardcode `kern.maxprocperuid`.** It is 4000 on the machine this was written
   for, but it is a tunable. Read it via sysctl; express thresholds as percentages of it.
+* **`kern.maxprocperuid` is not the only ceiling, and on its own it is the wrong one.**
+  `fork()` also fails at `RLIMIT_NPROC` (inherited from launchd at login, read with
+  `getrlimit` — never by shelling out to `ulimit`/`launchctl`) and at `kern.maxproc`,
+  which is shared with every other uid. The effective limit is the *minimum* of the three,
+  with `kern.maxproc` reduced by the foreign slot count. Reading only `kern.maxprocperuid`
+  let the app report "67,5 %, 1299 Slots frei" for nine hours while the machine could not
+  fork; it never reached its critical threshold and never cleaned up once. An unreadable
+  ceiling must count as "does not constrain", never as zero — a watchdog that sends SIGKILL
+  must not manufacture pressure out of a failed syscall. Which ceiling binds must stay
+  visible in the UI, the notifications, `--probe` and the CSV.
 * **Do not shell out to `ps` on the polling path.** Every subprocess is a `fork()`, which
   is the exact operation that fails in the condition being monitored. Use
   `sysctl(KERN_PROC_ALL)`. Zombie state is `p_stat == SZOMB` (5).
@@ -82,6 +92,16 @@ must remain proven by tests:
 * "No candidates because everything is active" and "no candidates because a signal could
   not be read" must never render as the same message. The second is a degraded state and
   has its own skip reason, summary wording, menu marker and CSV column.
+* The idle rule is right while there is room and wrong at the wall, so an emergency
+  override exists: at or below 5 % free slots it may bypass `spareParentsWithActiveSession`
+  for **one** parent per run, the largest offender. Without it the app watches the table
+  fill and reports `no-targets`, which is what happened on 2026-08-29 against 2038 zombies
+  — the offender held 526 of them but reset its idle clock every 45–60 min and so never
+  reached two idle hours. The override may only ever relax that one tunable: PID ≤ 1,
+  foreign uid and own ancestry are evaluated before it and stay unreachable; a parent with
+  unreadable idle signals is never overridden; the allowlist and zombie threshold still
+  apply, and a candidate they reject must not consume the run's single override. Idle
+  candidates are still taken first. Every one of these boundaries needs a test.
 * Idleness needs two independent signals — CPU duty cycle and session log age — and both
   must agree before a parent is reaped. CPU alone is not enough: a session delegates its
   work to short-lived grandchildren, so one running builds flat out measured 0.0000 %

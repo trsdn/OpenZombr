@@ -6,11 +6,14 @@ public struct ZombieSnapshot: Sendable, Equatable {
     public let timestamp: Date
     public let uid: uid_t
     /// Processes owned by `uid`, zombies included — zombies occupy slots and count
-    /// against `kern.maxprocperuid` just like live processes do.
+    /// against the process limit just like live processes do.
     public let totalProcesses: Int
     public let zombieCount: Int
-    /// `kern.maxprocperuid`, read at runtime.
-    public let limit: Int
+    /// Every ceiling that can make `fork()` fail, read at runtime.
+    public let limits: ProcessLimits
+    /// Slots held by other uids. Only these turn `kern.maxproc` into a real ceiling for
+    /// this uid, so the number has to travel with the limits.
+    public let foreignProcesses: Int
     /// Parents owning at least one zombie, sorted by zombie count descending.
     public let offenders: [ZombieParent]
     /// PIDs that must never be signalled: this process and every ancestor of it.
@@ -21,7 +24,8 @@ public struct ZombieSnapshot: Sendable, Equatable {
         uid: uid_t,
         totalProcesses: Int,
         zombieCount: Int,
-        limit: Int,
+        limits: ProcessLimits,
+        foreignProcesses: Int = 0,
         offenders: [ZombieParent],
         protectedPIDs: Set<pid_t> = []
     ) {
@@ -29,15 +33,55 @@ public struct ZombieSnapshot: Sendable, Equatable {
         self.uid = uid
         self.totalProcesses = totalProcesses
         self.zombieCount = zombieCount
-        self.limit = limit
+        self.limits = limits
+        self.foreignProcesses = max(0, foreignProcesses)
         self.offenders = offenders
         self.protectedPIDs = protectedPIDs
     }
 
-    /// Share of the per-uid limit currently in use. This, not the raw zombie count, is
+    /// Convenience for callers that only know one ceiling, which is every test that does
+    /// not exercise limit selection itself.
+    public init(
+        timestamp: Date,
+        uid: uid_t,
+        totalProcesses: Int,
+        zombieCount: Int,
+        limit: Int,
+        offenders: [ZombieParent],
+        protectedPIDs: Set<pid_t> = []
+    ) {
+        self.init(
+            timestamp: timestamp,
+            uid: uid,
+            totalProcesses: totalProcesses,
+            zombieCount: zombieCount,
+            limits: ProcessLimits(perUID: limit),
+            foreignProcesses: 0,
+            offenders: offenders,
+            protectedPIDs: protectedPIDs
+        )
+    }
+
+    /// The ceiling `fork()` reaches first, and which one it is.
+    public var binding: (limit: Int, ceiling: ProcessCeiling) {
+        limits.binding(foreignProcesses: foreignProcesses)
+    }
+
+    /// The limit that actually applies — the lowest of the three, not `kern.maxprocperuid`.
+    public var limit: Int { binding.limit }
+
+    /// Which ceiling the limit came from, so the UI and the evidence log can name it.
+    public var bindingCeiling: ProcessCeiling { binding.ceiling }
+
+    /// Share of the effective limit currently in use. This, not the raw zombie count, is
     /// what determines severity: `fork()` fails at the limit regardless of how the slots
     /// are split between live processes and zombies.
+    ///
+    /// Deliberately not clamped to 1. Exceeding the soft limit is possible — processes
+    /// that inherited a higher one keep forking — and a reading of 103 % is exactly the
+    /// signal that something is wrong with the assumed ceiling.
     public var usageFraction: Double {
+        let limit = self.limit
         guard limit > 0 else { return 0 }
         return Double(totalProcesses) / Double(limit)
     }
@@ -46,12 +90,21 @@ public struct ZombieSnapshot: Sendable, Equatable {
         max(0, limit - totalProcesses)
     }
 
+    /// Share of the limit still available. The pressure signal the emergency override
+    /// keys on, expressed so it does not have to re-derive the effective limit.
+    public var freeSlotFraction: Double {
+        let limit = self.limit
+        guard limit > 0 else { return 0 }
+        return Double(freeSlots) / Double(limit)
+    }
+
     public var liveProcesses: Int {
         max(0, totalProcesses - zombieCount)
     }
 
     /// Share of the limit occupied by zombies alone — the part that is pure waste.
     public var zombieFraction: Double {
+        let limit = self.limit
         guard limit > 0 else { return 0 }
         return Double(zombieCount) / Double(limit)
     }
@@ -94,8 +147,8 @@ public struct ZombieSampler: Sendable {
         -> ZombieSnapshot
     {
         let entries = try enumerator.enumerateProcesses()
-        let limit = try limitReader.maximumProcessesPerUID()
-        let base = snapshot(from: entries, limit: limit, now: now)
+        let limits = try limitReader.processLimits()
+        let base = snapshot(from: entries, limits: limits, now: now)
         guard let idleTracker else { return base }
         return applyingIdle(to: base, entries: entries, tracker: idleTracker, now: now)
     }
@@ -162,7 +215,8 @@ public struct ZombieSampler: Sendable {
             uid: snapshot.uid,
             totalProcesses: snapshot.totalProcesses,
             zombieCount: snapshot.zombieCount,
-            limit: snapshot.limit,
+            limits: snapshot.limits,
+            foreignProcesses: snapshot.foreignProcesses,
             offenders: updated,
             protectedPIDs: snapshot.protectedPIDs
         )
@@ -170,6 +224,13 @@ public struct ZombieSampler: Sendable {
 
     /// Pure transformation, exposed so tests can pin the aggregation rules.
     public func snapshot(from entries: [ProcessEntry], limit: Int, now: Date) -> ZombieSnapshot {
+        snapshot(from: entries, limits: ProcessLimits(perUID: limit), now: now)
+    }
+
+    /// Pure transformation, exposed so tests can pin the aggregation rules.
+    public func snapshot(from entries: [ProcessEntry], limits: ProcessLimits, now: Date)
+        -> ZombieSnapshot
+    {
         let byPID = Dictionary(entries.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
         let mine = entries.filter { $0.uid == currentUID }
         let zombies = mine.filter(\.isZombie)
@@ -231,7 +292,10 @@ public struct ZombieSampler: Sendable {
             uid: currentUID,
             totalProcesses: mine.count,
             zombieCount: zombies.count,
-            limit: limit,
+            limits: limits,
+            // Everything not owned by this uid is what stands between us and
+            // `kern.maxproc`.
+            foreignProcesses: entries.count - mine.count,
             offenders: offenders,
             protectedPIDs: ProcessProtection.protectedPIDs(of: currentPID, in: entries)
         )

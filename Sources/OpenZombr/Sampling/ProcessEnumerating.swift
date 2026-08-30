@@ -24,12 +24,16 @@ public protocol ProcessEnumerating: Sendable {
     func arguments(for pid: pid_t) -> [String]?
 }
 
-/// Reads `kern.maxprocperuid`.
+/// Reads every ceiling that can make `fork()` fail.
 ///
-/// Separate from enumeration because it is a different sysctl and because tests need to
-/// pin the limit to a known value.
+/// Separate from enumeration because these are different syscalls and because tests need
+/// to pin the limits to known values.
+///
+/// Returns all of them rather than a single number: reading `kern.maxprocperuid` alone
+/// let the app report 1299 free slots at the exact moment `fork()` was failing. See
+/// `ProcessLimits`.
 public protocol ProcessLimitReading: Sendable {
-    func maximumProcessesPerUID() throws -> Int
+    func processLimits() throws -> ProcessLimits
 }
 
 public enum ProcessTableError: Error, CustomStringConvertible {

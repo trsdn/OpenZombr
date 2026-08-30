@@ -45,7 +45,8 @@ public struct CleanupService: Sendable {
             )
         }
 
-        let results = reaper.terminate(selection.targets, policy: policy)
+        let results = reaper.terminate(
+            selection.targets, policy: policy, emergencyOverrides: selection.emergencyOverrides)
         sleeper.sleep(for: verificationDelay)
 
         let after = try? sampler.sample(now: Date())

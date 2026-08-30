@@ -75,9 +75,10 @@ Because a zombie can never be the target, **OpenZombr only ever signals parents*
 * Computes an **ETA to fork failure** from the observed growth rate, fitted over a
   10-minute window. This is the single most useful number: during the incident the
   machine was ~11 minutes from lockup and nothing said so.
-* Thresholds are **percentages of `kern.maxprocperuid`** (default: warning 50 %,
-  critical 75 %), read from sysctl at runtime and never hardcoded, so they stay correct
-  if the limit changes.
+* Thresholds are **percentages of the effective process limit** (default: warning 50 %,
+  critical 75 %), read at runtime and never hardcoded, so they stay correct if the limit
+  changes. The effective limit is the *lowest* of three ceilings — see
+  [Which limit actually binds](#which-limit-actually-binds).
 * **Automatic cleanup** when the critical threshold is crossed: finds parents owning more
   than N zombies (default 100), terminates them, then re-samples and *verifies* the
   zombie count actually dropped. Toggleable, and also available on demand via
@@ -86,6 +87,61 @@ Because a zombie can never be the target, **OpenZombr only ever signals parents*
   once per crossing rather than once per poll.
 * Writes a CSV evidence log to `~/Library/Application Support/OpenZombr/` — this is the
   material for an upstream bug report against `agency`.
+
+### Which limit actually binds
+
+`kern.maxprocperuid` is not the only ceiling `fork()` can hit, and reading it alone made
+the app confidently wrong for nine hours on 2026-08-29.
+
+Three limits apply at once:
+
+| Ceiling | Read via | Notes |
+| --- | --- | --- |
+| `kern.maxprocperuid` | `sysctl` | Per-uid. Writable at runtime. |
+| `RLIMIT_NPROC` | `getrlimit(RLIMIT_NPROC)` | Per-uid soft limit, **inherited at process creation**. |
+| `kern.maxproc` | `sysctl` | System-wide, shared with root and every other uid. |
+
+The effective limit is the minimum of the three, with `kern.maxproc` reduced by the slots
+other uids already hold. Which one binds is shown in the menu, named in every
+notification, printed by `--probe`, and recorded in the `limit_source` column of the
+evidence log.
+
+#### What went wrong without it
+
+Mid-incident `kern.maxprocperuid` was raised from 2666 to 4000 as an emergency mitigation.
+The app followed the new value. But `RLIMIT_NPROC` is handed out by launchd at login and a
+sysctl write does not change it retroactively:
+
+```
+$ sysctl kern.maxprocperuid kern.maxproc
+kern.maxprocperuid: 4000
+kern.maxproc: 4000
+$ launchctl limit maxproc
+maxproc     2666           4000
+$ ulimit -u
+2666
+```
+
+From 14:24 onward the uid held between 2666 and 2744 processes — **451 consecutive
+samples above the soft limit**, peaking at 2744. `fork()` was returning `EAGAIN`, no new
+session could be started, and the machine ultimately had to be restarted. Throughout,
+the evidence log recorded:
+
+```
+2026-08-29T22:42:41Z,2701,2038,4000,67.5,1299,...,poll,
+```
+
+67,5 % used and 1299 free slots, against a limit of 4000 that nothing was actually
+enforcing. The critical threshold of 75 % was never reached — the peak for the entire day
+was 68,6 % — so automatic cleanup never ran once. The app was not blind; it was measuring
+against the wrong number, which is worse, because it looks like good news.
+
+The same reading is now 2744 / 2666 = **102,9 %, zero slots free, `limit_source=rlimit-nproc`**,
+which is critical and does trigger cleanup. Both readings are pinned by
+`ProcessLimitsTests`.
+
+An unreadable ceiling is treated as "does not constrain", never as zero — a watchdog that
+sends SIGKILL must not manufacture pressure out of a failed syscall.
 
 ### The evidence log, and one known anomaly in the archive
 
@@ -124,7 +180,9 @@ These are the rules that matter most, and each one is covered by a unit test:
   the comparison is `< threshold` skips, so a parent holding exactly the configured number
   is a candidate.
 * **Never a process that still hosts an active session.** See below — this is the rule
-  that keeps working once the app is launched at login.
+  that keeps working once the app is launched at login. It is also the only rule the
+  emergency override may relax, and only at zero free slots, only for one parent per run,
+  and never for a parent whose signals could not be read.
 * **SIGTERM before SIGKILL.** The known offender ignores SIGTERM, so escalation is
   required — but SIGTERM is still attempted first, escalation happens only after a grace
   period, and which signal actually worked is recorded.
@@ -493,6 +551,51 @@ could not be read.
 
 Note that this is the expected state for the first poll or two after launch, because
 idleness needs at least two readings before it means anything.
+
+#### The idle rule is wrong at the wall: the emergency override
+
+The 2 h idle rule is correct while there is room to be patient. At zero free slots it
+protects nothing, and on 2026-08-29 it is what stopped the app from rescuing the machine.
+
+The worst offender, pid 28979, held 526 zombies for hours. Its idle clock kept restarting:
+
+```
+22:42:06  cpu_idle=1560; log_age=1607   cleanup,no-targets   (2038 zombies)
+23:01:06  cpu_idle=0;    log_age=57
+```
+
+A wrapper that emits a non-heartbeat log line every 45–60 minutes never accumulates two
+idle hours, so it was treated as an active session for its entire life. The manual
+cleanup at 22:42 duly reported `no-targets` against 2038 zombies, and the machine had to
+be restarted twenty minutes later.
+
+So once free slots fall to or below **5 % of the effective limit** (configurable, capped
+at 50 %), the idle protection may be bypassed for **one** parent per run — the one holding
+the most zombies. The argument is not that the session is finished. It is that a session
+which cannot `fork()` is already broken, and every other session on the machine is broken
+with it, so there is nothing left for the rule to protect.
+
+What the override deliberately does **not** relax:
+
+* **The unconditional protections.** PID ≤ 1, foreign uid and own ancestry are all
+  evaluated *before* the override is considered. Pressure cannot reach them.
+* **Blind signals.** A parent whose CPU or log signal could not be read stays protected at
+  zero free slots. Absence of evidence must never read as evidence of idleness, least of
+  all under pressure, when the temptation to act is greatest.
+* **The allowlist and the zombie threshold.** They are not idle rules. A candidate they
+  reject also does not consume the run's single override, so an unrelated process cannot
+  shield the real offender.
+* **Idle-first ordering.** Genuinely idle candidates are taken first, so the override is
+  only ever spent after the harmless targets are exhausted.
+
+An override is visible everywhere it happened: `emergencyOverrides` on the selection,
+`wasEmergencyOverride` on the result, an `override=emergency` column in the CSV, and a run
+summary prefixed `Notfall-Bereinigung:`. A parent protected only because the single
+override was already spent reports its own skip reason, `emergencyBudgetSpent`, so it never
+looks like an ordinary busy session at zero free slots.
+
+Every boundary above is pinned by `EmergencyOverrideTests`. The whole mechanism can be
+switched off in the preferences, at the price of reproducing the incident.
 
 ### Killing a wrapper is survivable — but that is not the safety argument
 

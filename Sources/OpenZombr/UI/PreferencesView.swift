@@ -22,7 +22,7 @@ public struct PreferencesView: View {
                 }
             }
 
-            Section("Schwellen (in % von kern.maxprocperuid)") {
+            Section("Schwellen (in % des wirksamen Prozesslimits)") {
                 LabeledContent("Warnung") {
                     HStack {
                         TextField(
@@ -45,7 +45,9 @@ public struct PreferencesView: View {
                 }
                 Text(
                     "Prozentwerte statt fester Zahlen, damit die Schwellen auch dann "
-                        + "stimmen, wenn sich das Limit ändert."
+                        + "stimmen, wenn sich das Limit ändert. Maßgeblich ist immer die "
+                        + "niedrigste Decke: kern.maxprocperuid, RLIMIT_NPROC oder der "
+                        + "systemweite Rest von kern.maxproc."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -76,6 +78,28 @@ public struct PreferencesView: View {
                     "Ein Kindprozess, der stundenlang keine CPU-Zeit verbraucht, gehört zu "
                         + "einer beendeten Sitzung und schützt den Elternprozess nicht mehr. "
                         + "Kurze Denkpausen bleiben dadurch unangetastet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(
+                    "Notfall: bei vollem Prozesstisch trotzdem eingreifen",
+                    isOn: $preferences.emergencyOverrideEnabled)
+                    .disabled(!preferences.spareActiveSessions)
+                Stepper(
+                    "Notfall ab höchstens "
+                        + String(format: "%.0f", preferences.emergencyFreeSlotPercent)
+                        + " % freien Slots",
+                    value: $preferences.emergencyFreeSlotPercent,
+                    in: 0...Preferences.maximumEmergencyFreeSlotPercent,
+                    step: 1
+                )
+                .disabled(
+                    !preferences.spareActiveSessions || !preferences.emergencyOverrideEnabled)
+                Text(
+                    "Sind die Slots aufgebraucht, schützt die Sitzungsregel nichts mehr: "
+                        + "eine Sitzung, die nicht mehr forken kann, ist bereits kaputt. "
+                        + "Dann wird genau ein Prozess beendet — der mit den meisten "
+                        + "Zombies. Prozesse, deren Sitzungssignale unlesbar sind, bleiben "
+                        + "auch im Notfall verschont.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("Ab Zombies pro Elternprozess") {

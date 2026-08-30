@@ -14,12 +14,18 @@ public final class Preferences: ObservableObject {
         public static let notificationsEnabled = "notificationsEnabled"
         public static let spareActiveSessions = "spareActiveSessions"
         public static let sessionIdleHours = "sessionIdleHours"
+        public static let emergencyOverrideEnabled = "emergencyOverrideEnabled"
+        public static let emergencyFreeSlotPercent = "emergencyFreeSlotPercent"
     }
 
     public static let defaultPollInterval: TimeInterval = 60
     public static let minimumPollInterval: TimeInterval = 5
     public static let maximumPollInterval: TimeInterval = 3600
     public static let minimumSessionIdleHours: Double = 0.5
+    /// Ceiling on the emergency threshold, mirroring the clamp in `CleanupPolicy`: an
+    /// override that fires at half-empty is not an emergency measure, it is the normal
+    /// path with the idle rule switched off.
+    public static let maximumEmergencyFreeSlotPercent: Double = 50
     /// Bounded by the log reader's horizon, not chosen independently: a threshold the
     /// reader cannot reach would disable cleanup without any visible sign.
     public static let maximumSessionIdleHours = SessionLogReader.defaultHorizon / 3600
@@ -119,6 +125,26 @@ public final class Preferences: ObservableObject {
         didSet { defaults.set(notificationsEnabled, forKey: Key.notificationsEnabled) }
     }
 
+    /// Whether the idle protection may be bypassed for the single worst offender once the
+    /// machine has run out of slots. On by default: with it off, the app watches the
+    /// process table fill up and reports that it has no candidates, which is exactly what
+    /// happened on 2026-08-29.
+    @Published public var emergencyOverrideEnabled: Bool {
+        didSet { defaults.set(emergencyOverrideEnabled, forKey: Key.emergencyOverrideEnabled) }
+    }
+
+    /// Percentage of free slots at or below which the override may fire.
+    @Published public var emergencyFreeSlotPercent: Double {
+        didSet {
+            let clamped = min(max(emergencyFreeSlotPercent, 0), Self.maximumEmergencyFreeSlotPercent)
+            if clamped != emergencyFreeSlotPercent {
+                emergencyFreeSlotPercent = clamped
+                return
+            }
+            defaults.set(emergencyFreeSlotPercent, forKey: Key.emergencyFreeSlotPercent)
+        }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let storedInterval = defaults.object(forKey: Key.pollInterval) as? TimeInterval
@@ -142,6 +168,14 @@ public final class Preferences: ObservableObject {
             defaults.object(forKey: Key.notificationsEnabled) as? Bool ?? true
         self.spareActiveSessions =
             defaults.object(forKey: Key.spareActiveSessions) as? Bool ?? true
+        self.emergencyOverrideEnabled =
+            defaults.object(forKey: Key.emergencyOverrideEnabled) as? Bool ?? true
+        self.emergencyFreeSlotPercent = min(
+            max(
+                defaults.object(forKey: Key.emergencyFreeSlotPercent) as? Double
+                    ?? CleanupPolicy.defaultEmergencyFreeSlotFraction * 100,
+                0),
+            Self.maximumEmergencyFreeSlotPercent)
         // Clamped here as well as in `didSet`, because initialisation does not observe:
         // a value stored by an older build could otherwise sit outside the range forever.
         self.sessionIdleHours = min(
@@ -165,7 +199,9 @@ public final class Preferences: ObservableObject {
             allowedNamePatterns: Self.patterns(from: allowedPatternsText),
             deniedNamePatterns: Self.patterns(from: deniedPatternsText),
             spareParentsWithActiveSession: spareActiveSessions,
-            sessionIdleThreshold: sessionIdleHours * 3600
+            sessionIdleThreshold: sessionIdleHours * 3600,
+            emergencyOverrideEnabled: emergencyOverrideEnabled,
+            emergencyFreeSlotFraction: emergencyFreeSlotPercent / 100
         )
     }
 

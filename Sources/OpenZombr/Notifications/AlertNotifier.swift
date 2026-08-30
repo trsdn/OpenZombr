@@ -29,6 +29,10 @@ public enum AlertPresentation {
                 + "(\(Formatting.percent(snapshot.usageFraction))), "
                 + "davon \(Formatting.count(snapshot.zombieCount)) Zombies."
         ]
+        // Which ceiling produced that number. A user who has raised kern.maxprocperuid
+        // will otherwise not believe the percentage, and during the incident they would
+        // have been right not to.
+        parts.append("Limit: \(snapshot.bindingCeiling.germanDescription).")
         if forecast.isGrowing, let seconds = forecast.secondsToExhaustion {
             parts.append("Limit erreicht in ca. \(Formatting.duration(seconds)).")
         }
