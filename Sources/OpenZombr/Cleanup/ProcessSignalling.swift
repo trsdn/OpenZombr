@@ -77,13 +77,37 @@ public struct POSIXSignalSender: ProcessSignalling {
         return kill(pid, signal) == 0
     }
 
-    /// `kill(pid, 0)` performs the permission and existence check without delivering a
-    /// signal. `EPERM` means the process exists but belongs to someone else, which still
-    /// counts as alive.
+    /// Whether the process is still *running*.
+    ///
+    /// A zombie is not alive. This matters more than it sounds: `kill(pid, 0)` succeeds
+    /// for a zombie, because the entry is still in the process table until its parent
+    /// reaps it — and SIGKILLing a wrapper turns it into exactly that for a moment. The
+    /// escalation therefore reported `survived` for kills that had worked perfectly.
+    /// Observed live: `kill:15+9 … survived;reaped=264;freed=295;verified=true`, a single
+    /// row claiming both that the target lived and that its 264 zombies had been released.
+    ///
+    /// It matters before signalling too: a target that is already a zombie must be
+    /// reported as gone rather than signalled, since a zombie cannot be killed.
     public func isAlive(pid: pid_t) -> Bool {
         guard pid > 1 else { return true }
+        if let zombie = Self.isZombie(pid: pid) { return !zombie }
+        // The process table could not be read for this pid. Fall back to the permission
+        // and existence check: `EPERM` means it exists but belongs to someone else.
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
+    }
+
+    /// `true`/`false` when the kernel could be asked, `nil` when the pid has no readable
+    /// entry — which includes the pid being gone entirely.
+    private static func isZombie(pid: pid_t) -> Bool? {
+        var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&name, u_int(name.count), &info, &size, nil, 0) == 0,
+            size >= MemoryLayout<kinfo_proc>.stride,
+            info.kp_proc.p_pid == pid
+        else { return nil }
+        return info.kp_proc.p_stat == SysctlProcessEnumerator.zombieState
     }
 
     /// Reads the live identity with a single `KERN_PROC_PID` sysctl and compares it.

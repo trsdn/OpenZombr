@@ -218,6 +218,75 @@ final class EmergencyOverrideTests: XCTestCase {
         XCTAssertEqual(selection.emergencyOverrides, [28979])
     }
 
+    /// The override picks the *least recently active* parent, not the biggest one.
+    ///
+    /// Measured live at 93 % usage while verifying this feature: three wrappers all read
+    /// "active", holding 262 / 257 / 249 zombies, with session log ages of 16 s, 4736 s and
+    /// 5206 s. Ranking by zombie count selected the 16-second-old one — the session the
+    /// user was working in — to gain 13 zombies over one silent for 87 minutes.
+    func testTheOverrideSacrificesTheStalestSessionNotTheBiggest() {
+        func wrapper(pid: pid_t, zombies: Int, logAge: TimeInterval, cpuIdle: TimeInterval)
+            -> ZombieParent
+        {
+            Fixture.parent(
+                pid: pid, zombieCount: zombies, liveChildCount: 1, sessionChildCount: 1,
+                sessionChildPIDs: [pid + 1], sessionIdleSeconds: cpuIdle,
+                sessionLogAgeSeconds: logAge)
+        }
+
+        let selection = reaper().selectTargets(
+            in: atTheWall(offenders: [
+                wrapper(pid: 9126, zombies: 262, logAge: 16, cpuIdle: 0),
+                wrapper(pid: 14515, zombies: 257, logAge: 4736, cpuIdle: 6),
+                wrapper(pid: 18251, zombies: 249, logAge: 5206, cpuIdle: 0),
+            ]),
+            policy: policy
+        )
+
+        XCTAssertEqual(selection.targets.map(\.pid), [18251])
+        XCTAssertEqual(selection.emergencyOverrides, [18251])
+    }
+
+    /// The freshest session is only ever reached when it is the sole offender, because one
+    /// override is spent per run and the stalest candidate always goes first.
+    func testTheLiveSessionIsPickedLast() {
+        let live = Fixture.parent(
+            pid: 9126, zombieCount: 900, liveChildCount: 1, sessionChildCount: 1,
+            sessionChildPIDs: [9127], sessionIdleSeconds: 0, sessionLogAgeSeconds: 16)
+        let stale = Fixture.parent(
+            pid: 18251, zombieCount: 101, liveChildCount: 1, sessionChildCount: 1,
+            sessionChildPIDs: [18252], sessionIdleSeconds: 0, sessionLogAgeSeconds: 5206)
+
+        XCTAssertEqual(
+            reaper().selectTargets(in: atTheWall(offenders: [live, stale]), policy: policy)
+                .targets.map(\.pid),
+            [18251])
+
+        XCTAssertEqual(
+            reaper().selectTargets(in: atTheWall(offenders: [live]), policy: policy)
+                .targets.map(\.pid),
+            [9126])
+    }
+
+    /// Ordering among *idle* candidates is unchanged: they are all safe to reap, so the
+    /// one holding the most zombies still goes first.
+    func testIdleCandidatesAreStillOrderedByZombieCount() {
+        func finished(pid: pid_t, zombies: Int) -> ZombieParent {
+            Fixture.parent(
+                pid: pid, zombieCount: zombies, liveChildCount: 1, sessionChildCount: 1,
+                sessionChildPIDs: [pid + 1], sessionIdleSeconds: 20000,
+                sessionLogAgeSeconds: 9000)
+        }
+
+        let selection = reaper().selectTargets(
+            in: atTheWall(offenders: [finished(pid: 100, zombies: 150), finished(pid: 200, zombies: 400)]),
+            policy: policy
+        )
+
+        XCTAssertEqual(selection.targets.map(\.pid), [200, 100])
+        XCTAssertTrue(selection.emergencyOverrides.isEmpty)
+    }
+
     // MARK: - Reporting
 
     /// An override must remain visible all the way out to the report and the menu, so a

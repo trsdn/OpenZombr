@@ -215,6 +215,29 @@ public struct ZombieReaper: Sendable {
             let lhsBusy = lhs.isSessionActive(idleThreshold: threshold)
             let rhsBusy = rhs.isSessionActive(idleThreshold: threshold)
             if lhsBusy != rhsBusy { return !lhsBusy }
+
+            // Among parents that all still count as busy, the one to sacrifice first is
+            // the one with the oldest sign of life — never the one holding the most
+            // zombies. This only matters because the emergency override can now reach a
+            // busy parent, and getting it wrong is expensive: measured live at 93 % usage,
+            // three wrappers all read "active" holding 262 / 257 / 249 zombies with log
+            // ages of 16 s, 4736 s and 5206 s. Ranking by zombie count picked the
+            // 16-second-old one — the session the user was sitting in — to gain 13 zombies
+            // over one that had been silent for 87 minutes.
+            //
+            // The log age leads because it is the stronger of the two signals: a session
+            // delegates its work, so CPU time reads 0 for wrappers that are busy and for
+            // wrappers that are finished alike. An unreadable signal sorts as "just alive",
+            // so it is picked last — and such a parent is barred from the override anyway.
+            if lhsBusy {
+                if lhs.sessionLogAgeSeconds != rhs.sessionLogAgeSeconds {
+                    return (lhs.sessionLogAgeSeconds ?? 0) > (rhs.sessionLogAgeSeconds ?? 0)
+                }
+                if lhs.sessionIdleSeconds != rhs.sessionIdleSeconds {
+                    return (lhs.sessionIdleSeconds ?? 0) > (rhs.sessionIdleSeconds ?? 0)
+                }
+            }
+
             if lhs.zombieCount != rhs.zombieCount {
                 return lhs.zombieCount > rhs.zombieCount
             }
