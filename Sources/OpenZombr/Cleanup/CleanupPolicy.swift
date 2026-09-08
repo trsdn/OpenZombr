@@ -16,8 +16,6 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// Five percent of the effective limit. Below this the machine is at the wall, not
     /// approaching it.
     public static let defaultEmergencyFreeSlotFraction = 0.05
-    /// One. The override exists to buy slots back, not to clear the table.
-    public static let defaultMaximumEmergencyOverrides = 1
 
     /// A parent is only ever considered once it owns at least this many zombies.
     /// Reaping a handful of zombies is not worth killing a process over.
@@ -73,10 +71,21 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// Share of the effective limit that must still be free for the idle protection to
     /// hold unconditionally. At or below it, the override may fire.
     public var emergencyFreeSlotFraction: Double
-    /// How many parents one run may reap through the override. Deliberately one: the
-    /// worst offender alone freed 526 slots, and if that is not enough the next poll can
-    /// take the next one, with fresh evidence.
-    public var maximumEmergencyOverrides: Int
+    /// Usage the override tries to get back below before it stops taking targets.
+    ///
+    /// This replaces a fixed budget of one override per run, which was measured to lose
+    /// the race. At 01:25 on 2026-08-30 the machine sat at 95 % with eight leaking
+    /// wrappers; the single override freed 295 slots and dropped usage to 84 %, still
+    /// critical. The leak was growing at 93,5 slots/min, so those 295 slots were spent
+    /// again in about three minutes — against a two-minute cooldown, one kill per run
+    /// barely broke even and would have taken sixteen minutes to work through the eight
+    /// wrappers, at 95 % usage the whole time.
+    ///
+    /// Expressed as a target rather than a count because that is what makes it
+    /// self-limiting: if reaping one parent is enough, exactly one is reaped. It is set
+    /// from the user's critical threshold, so "enough" means the same thing here as it
+    /// does everywhere else in the app.
+    public var emergencyRecoveryUsageFraction: Double
 
     public init(
         minimumZombiesPerParent: Int = CleanupPolicy.defaultMinimumZombies,
@@ -88,7 +97,7 @@ public struct CleanupPolicy: Sendable, Equatable {
         sessionIdleThreshold: TimeInterval = CleanupPolicy.defaultSessionIdleThreshold,
         emergencyOverrideEnabled: Bool = true,
         emergencyFreeSlotFraction: Double = CleanupPolicy.defaultEmergencyFreeSlotFraction,
-        maximumEmergencyOverrides: Int = CleanupPolicy.defaultMaximumEmergencyOverrides
+        emergencyRecoveryUsageFraction: Double = Thresholds.defaultCriticalFraction
     ) {
         self.minimumZombiesPerParent = max(1, minimumZombiesPerParent)
         self.allowedNamePatterns = allowedNamePatterns.filter { !$0.isEmpty }
@@ -101,14 +110,27 @@ public struct CleanupPolicy: Sendable, Equatable {
         // Clamped below 0.5: an override that fires at half-empty is not an emergency
         // measure, it is the normal path with the safety rule switched off.
         self.emergencyFreeSlotFraction = min(max(emergencyFreeSlotFraction, 0), 0.5)
-        self.maximumEmergencyOverrides = max(0, maximumEmergencyOverrides)
+        // Capped at the point where the pressure trigger releases, so the override always
+        // climbs *out* of the emergency zone. A recovery target above `1 - free-slot
+        // fraction` would be satisfied while the machine is still at the wall, and the
+        // override would fire again on the very next poll — reaping in a loop rather than
+        // reaching a stable state. Floored well below that so it stays a real target.
+        self.emergencyRecoveryUsageFraction = min(
+            max(emergencyRecoveryUsageFraction, 0.1), 1 - self.emergencyFreeSlotFraction)
     }
 
     /// Whether the machine is out of room, and the idle protection may therefore be
-    /// bypassed for the single worst offender.
+    /// bypassed for the parents that have been quiet longest.
     public func isUnderEmergencyPressure(_ snapshot: ZombieSnapshot) -> Bool {
-        guard emergencyOverrideEnabled, maximumEmergencyOverrides > 0 else { return false }
+        guard emergencyOverrideEnabled else { return false }
         return snapshot.freeSlotFraction <= emergencyFreeSlotFraction
+    }
+
+    /// Whether `projectedProcesses` is still above the recovery target, i.e. whether the
+    /// override has more work to do after the targets already chosen.
+    public func needsMoreRelief(projectedProcesses: Int, limit: Int) -> Bool {
+        guard limit > 0 else { return false }
+        return Double(projectedProcesses) / Double(limit) >= emergencyRecoveryUsageFraction
     }
 
     /// Substring matching, not regex: the patterns are typed by a user into a
@@ -144,10 +166,11 @@ public enum SkipReason: String, Sendable, Equatable {
     /// never read as evidence of idleness, and least of all under pressure, when the
     /// temptation to act is greatest.
     case sessionSignalUnavailable
-    /// The machine is out of slots and this parent has an active session, but the run's
-    /// emergency override was already spent on a worse offender. Recorded separately so a
-    /// protected parent at 0 free slots never looks like an ordinary "session is busy".
-    case emergencyBudgetSpent
+    /// The machine is out of slots and this parent has an active session, but the targets
+    /// already chosen are projected to bring usage back under the recovery threshold.
+    /// Recorded separately so a protected parent at 0 free slots never looks like an
+    /// ordinary "session is busy".
+    case emergencyReliefReached
 
     public var germanDescription: String {
         switch self {
@@ -161,8 +184,8 @@ public enum SkipReason: String, Sendable, Equatable {
         case .hasActiveSession: return "hat eine aktive Sitzung (Kindprozess arbeitet)"
         case .sessionSignalUnavailable:
             return "Sitzungssignale nicht lesbar — keine Entscheidungsgrundlage"
-        case .emergencyBudgetSpent:
-            return "aktive Sitzung — Notfall-Kontingent bereits verbraucht"
+        case .emergencyReliefReached:
+            return "aktive Sitzung — Notfall-Entlastung bereits erreicht"
         }
     }
 }

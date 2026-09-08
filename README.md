@@ -181,8 +181,9 @@ These are the rules that matter most, and each one is covered by a unit test:
   is a candidate.
 * **Never a process that still hosts an active session.** See below — this is the rule
   that keeps working once the app is launched at login. It is also the only rule the
-  emergency override may relax, and only at zero free slots, only for one parent per run,
-  and never for a parent whose signals could not be read.
+  emergency override may relax, and only at zero free slots, only far enough to bring the
+  projection back under the critical threshold, and never for a parent whose signals could
+  not be read.
 * **SIGTERM before SIGKILL.** The known offender ignores SIGTERM, so escalation is
   required — but SIGTERM is still attempted first, escalation happens only after a grace
   period, and which signal actually worked is recorded.
@@ -570,12 +571,38 @@ cleanup at 22:42 duly reported `no-targets` against 2038 zombies, and the machin
 be restarted twenty minutes later.
 
 So once free slots fall to or below **5 % of the effective limit** (configurable, capped
-at 50 %), the idle protection may be bypassed for **one** parent per run — the one holding
-the most zombies. The argument is not that the session is finished. It is that a session
-which cannot `fork()` is already broken, and every other session on the machine is broken
-with it, so there is nothing left for the rule to protect.
+at 50 %), the idle protection may be bypassed. The argument is not that the session is
+finished. It is that a session which cannot `fork()` is already broken, and every other
+session on the machine is broken with it, so there is nothing left for the rule to protect.
 
-What the override deliberately does **not** relax:
+#### How far it goes, and who it picks
+
+**How far:** it reaps until the projection says the machine is healthy again — usage back
+under the critical threshold — and stops there.
+
+A fixed budget of one per run was tried first and measured to lose the race. At 01:25 on
+2026-08-30 the machine sat at 95 % with eight leaking wrappers; the single override freed
+295 slots and left it at 84 %, still critical, while the leak grew at **93,5 slots/min** —
+spending that relief again in about three minutes, against a two-minute cooldown. Working
+through eight wrappers one at a time would have taken sixteen minutes at 95 % usage.
+
+Expressing it as a target rather than a count is what keeps it self-limiting: the relief
+of every target already chosen is subtracted first, so if one parent is enough, exactly
+one is taken. The projection deliberately *underestimates* what a kill frees — zombies
+plus the wrapper's own slot, where the measured figure was 295 freed for 265 zombies —
+because an optimistic projection stops too early, which is the failure this exists to
+prevent. `maximumTargetsPerRun` remains the hard ceiling.
+
+**Who:** the parent with the oldest sign of life, never the one holding the most zombies.
+This was also caught by measurement rather than by reasoning: live at 93 % usage, three
+wrappers all read "active" holding 262 / 257 / 249 zombies with session log ages of 16 s,
+4736 s and 5206 s. Ranking by zombie count picked the 16-second-old one — the session the
+user was sitting in — to gain 13 zombies over one silent for 87 minutes.
+
+The log age leads because it is the stronger signal: a session delegates its work, so CPU
+time reads 0 for busy and finished wrappers alike.
+
+#### What the override deliberately does **not** relax
 
 * **The unconditional protections.** PID ≤ 1, foreign uid and own ancestry are all
   evaluated *before* the override is considered. Pressure cannot reach them.
@@ -583,18 +610,23 @@ What the override deliberately does **not** relax:
   zero free slots. Absence of evidence must never read as evidence of idleness, least of
   all under pressure, when the temptation to act is greatest.
 * **The allowlist and the zombie threshold.** They are not idle rules. A candidate they
-  reject also does not consume the run's single override, so an unrelated process cannot
-  shield the real offender.
-* **Idle-first ordering.** Genuinely idle candidates are taken first, so the override is
-  only ever spent after the harmless targets are exhausted.
+  reject also contributes no relief to the projection, so an unrelated process holding
+  thousands of zombies cannot shield the real offenders.
+* **Idle-first ordering.** Genuinely idle candidates are taken first and their relief
+  counts, so an active session is only reached once the harmless targets have provably not
+  been enough.
+* **The recovery target itself** is capped below the point where the pressure trigger
+  releases. A target above it would be satisfied while the machine is still at the wall,
+  and the override would fire again on the next poll — reaping in a loop.
 
 An override is visible everywhere it happened: `emergencyOverrides` on the selection,
 `wasEmergencyOverride` on the result, an `override=emergency` column in the CSV, and a run
-summary prefixed `Notfall-Bereinigung:`. A parent protected only because the single
-override was already spent reports its own skip reason, `emergencyBudgetSpent`, so it never
+summary prefixed `Notfall-Bereinigung:`. A parent spared because the run is already
+projected to recover reports its own skip reason, `emergencyReliefReached`, so it never
 looks like an ordinary busy session at zero free slots.
 
-Every boundary above is pinned by `EmergencyOverrideTests`. The whole mechanism can be
+Every boundary above is pinned by `EmergencyOverrideTests`, including a replay of the
+2026-08-30 machine that asserts one run now resolves it. The whole mechanism can be
 switched off in the preferences, at the price of reproducing the incident.
 
 ### Killing a wrapper is survivable — but that is not the safety argument

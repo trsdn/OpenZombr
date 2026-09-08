@@ -97,9 +97,11 @@ public struct PreferencesView: View {
                 Text(
                     "Sind die Slots aufgebraucht, schützt die Sitzungsregel nichts mehr: "
                         + "eine Sitzung, die nicht mehr forken kann, ist bereits kaputt. "
-                        + "Dann wird genau ein Prozess beendet — der mit den meisten "
-                        + "Zombies. Prozesse, deren Sitzungssignale unlesbar sind, bleiben "
-                        + "auch im Notfall verschont.")
+                        + "Dann werden Prozesse beendet, bis die Auslastung voraussichtlich "
+                        + "wieder unter die kritische Schwelle fällt — die am längsten "
+                        + "stillen zuerst, nie die zuletzt aktive. Reicht einer, bleibt es "
+                        + "bei einem. Prozesse, deren Sitzungssignale unlesbar sind, "
+                        + "bleiben auch im Notfall verschont.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("Ab Zombies pro Elternprozess") {
