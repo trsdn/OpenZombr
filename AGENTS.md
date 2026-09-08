@@ -93,15 +93,26 @@ must remain proven by tests:
   not be read" must never render as the same message. The second is a degraded state and
   has its own skip reason, summary wording, menu marker and CSV column.
 * The idle rule is right while there is room and wrong at the wall, so an emergency
-  override exists: at or below 5 % free slots it may bypass `spareParentsWithActiveSession`
-  for **one** parent per run, the largest offender. Without it the app watches the table
-  fill and reports `no-targets`, which is what happened on 2026-08-29 against 2038 zombies
-  — the offender held 526 of them but reset its idle clock every 45–60 min and so never
-  reached two idle hours. The override may only ever relax that one tunable: PID ≤ 1,
-  foreign uid and own ancestry are evaluated before it and stay unreachable; a parent with
-  unreadable idle signals is never overridden; the allowlist and zombie threshold still
-  apply, and a candidate they reject must not consume the run's single override. Idle
-  candidates are still taken first. Every one of these boundaries needs a test.
+  override exists: at or below 5 % free slots it may bypass `spareParentsWithActiveSession`.
+  Without it the app watches the table fill and reports `no-targets`, which is what happened
+  on 2026-08-29 against 2038 zombies — the offender held 526 of them but reset its idle
+  clock every 45–60 min and so never reached two idle hours.
+* Two properties of that override were both established by measurement, not by reasoning,
+  and both must survive any refactor. **How far it goes:** reap until the projection is
+  back under the critical threshold, not a fixed count — one per run was measured to lose
+  the race, freeing 295 slots against a leak growing at 93,5 slots/min. The projection must
+  *underestimate* what a kill frees (zombies + the parent's own slot; measured 295 freed
+  for 265 zombies), because an optimistic projection stops too early. **Who it picks:** the
+  stalest session by log age, never the biggest by zombie count — measured live, ranking by
+  zombie count chose a session that had written 16 s ago over one silent for 87 minutes.
+* The override may only ever relax that one tunable: PID ≤ 1, foreign uid and own ancestry
+  are evaluated before it and stay unreachable; a parent with unreadable idle signals is
+  never overridden; the allowlist and zombie threshold still apply, and a candidate they
+  reject must contribute no relief to the projection; idle candidates are still taken first
+  and their relief counts, so a run that idle reaps alone can fix never touches a live
+  session; `maximumTargetsPerRun` stays the hard ceiling; and the recovery target is capped
+  below the pressure trigger so the override cannot reap in a loop. Every one of these
+  boundaries needs a test.
 * Idleness needs two independent signals — CPU duty cycle and session log age — and both
   must agree before a parent is reaped. CPU alone is not enough: a session delegates its
   work to short-lived grandchildren, so one running builds flat out measured 0.0000 %

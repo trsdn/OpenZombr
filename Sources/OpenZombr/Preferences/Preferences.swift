@@ -201,7 +201,11 @@ public final class Preferences: ObservableObject {
             spareParentsWithActiveSession: spareActiveSessions,
             sessionIdleThreshold: sessionIdleHours * 3600,
             emergencyOverrideEnabled: emergencyOverrideEnabled,
-            emergencyFreeSlotFraction: emergencyFreeSlotPercent / 100
+            emergencyFreeSlotFraction: emergencyFreeSlotPercent / 100,
+            // The override climbs back to the same line that defines "critical" everywhere
+            // else in the app, so raising the critical threshold also makes the emergency
+            // path stop earlier, instead of the two drifting apart.
+            emergencyRecoveryUsageFraction: thresholds.criticalFraction
         )
     }
 

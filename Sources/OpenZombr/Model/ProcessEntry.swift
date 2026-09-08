@@ -91,7 +91,18 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
     /// finished one.
     public let sessionLogAgeSeconds: TimeInterval?
 
-    /// True when the parent still has a live child that is not one of its own
+    /// Slots this parent is expected to release when it is terminated: its zombies, which
+    /// launchd reaps the moment they are reparented, plus its own table entry.
+    ///
+    /// Deliberately an underestimate. Measured on 2026-08-30, killing a wrapper holding
+    /// 265 zombies freed 295 slots, because its short-lived `agency` self-spawns went with
+    /// it; counting those would make the projection optimistic, and an optimistic
+    /// projection stops reaping too early — which is the failure this whole mechanism
+    /// exists to prevent. Erring the other way costs at most one extra target, and that
+    /// target is by construction the next *stalest* session, not an active one.
+    public var estimatedSlotsFreed: Int { zombieCount + 1 }
+
+    /// Whether the parent still has a live child that is not one of its own
     /// short-lived self-spawns, i.e. it is plausibly hosting real work.
     public var hasActiveSession: Bool { sessionChildCount > 0 }
 

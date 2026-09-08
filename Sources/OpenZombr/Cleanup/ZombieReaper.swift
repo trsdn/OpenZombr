@@ -201,13 +201,16 @@ public struct ZombieReaper: Sendable {
     /// tree, so liveness has to carry the weight instead.
     ///
     /// That ordering is also what makes the emergency override safe to express as a
-    /// budget: every genuinely idle candidate is considered before any active one, so the
-    /// override is only ever spent after the harmless targets are exhausted, and then on
-    /// the largest offender.
+    /// target rather than a count: every genuinely idle candidate is considered before any
+    /// active one, so their relief is subtracted first and an active session is only
+    /// reached once the harmless targets have provably not been enough.
     public func selectTargets(in snapshot: ZombieSnapshot, policy: CleanupPolicy) -> Selection {
         var targets: [ZombieParent] = []
         var skipped: [SkippedParent] = []
         var overrides: Set<pid_t> = []
+        /// How many slots the uid is expected to hold once the targets chosen so far have
+        /// been terminated. Drives the override's stop condition.
+        var projectedProcesses = snapshot.totalProcesses
 
         let threshold = policy.sessionIdleThreshold
         let underPressure = policy.isUnderEmergencyPressure(snapshot)
@@ -263,9 +266,9 @@ public struct ZombieReaper: Sendable {
             }
 
             // Whether this candidate is only eligible because the machine is at the wall.
-            // Decided here but not spent here: the remaining gates (allowlist, zombie
+            // Decided here but not acted on here: the remaining gates (allowlist, zombie
             // threshold, run limit) still have to accept it, and a candidate they reject
-            // must not consume the run's single override.
+            // must not count towards the relief the override is trying to achieve.
             var needsOverride = false
             if policy.spareParentsWithActiveSession
                 && parent.isSessionActive(idleThreshold: threshold)
@@ -277,11 +280,16 @@ public struct ZombieReaper: Sendable {
                         SkippedParent(parent: parent, reason: .sessionSignalUnavailable))
                     continue
                 }
-                guard underPressure, overrides.count < policy.maximumEmergencyOverrides else {
+                // Stop as soon as the targets already chosen are projected to bring usage
+                // back under the recovery threshold. This is what makes the override
+                // self-limiting: if one parent is enough, exactly one is taken.
+                let stillNeeded = policy.needsMoreRelief(
+                    projectedProcesses: projectedProcesses, limit: snapshot.limit)
+                guard underPressure, stillNeeded else {
                     skipped.append(
                         SkippedParent(
                             parent: parent,
-                            reason: underPressure ? .emergencyBudgetSpent : .hasActiveSession))
+                            reason: underPressure ? .emergencyReliefReached : .hasActiveSession))
                     continue
                 }
                 needsOverride = true
@@ -300,6 +308,7 @@ public struct ZombieReaper: Sendable {
                 continue
             }
             if needsOverride { overrides.insert(parent.pid) }
+            projectedProcesses -= parent.estimatedSlotsFreed
             targets.append(parent)
         }
 

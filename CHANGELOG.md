@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The emergency override reaps until the machine is projected to be healthy, not one
+  parent per run.** A fixed budget of one was tried first and measured to lose the race: at
+  01:25 on 2026-08-30 the machine sat at 95 % with eight leaking wrappers, the single
+  override freed 295 slots and left it at 84 % — still critical — while the leak grew at
+  93,5 slots/min, spending that relief again in about three minutes against a two-minute
+  cooldown. Selection now subtracts the projected relief of each chosen target and stops as
+  soon as usage falls back under the critical threshold, which keeps it self-limiting: when
+  one parent is enough, exactly one is taken, and relief from ordinary idle reaps counts
+  too, so a run that idle targets alone can fix never touches a live session. The
+  projection deliberately underestimates what a kill frees — zombies plus the parent's own
+  slot, against a measured 295 freed for 265 zombies — because an optimistic projection
+  stops too early. `maximumTargetsPerRun` remains the hard ceiling, and the recovery target
+  is capped below the pressure trigger so the override cannot reap in a loop.
+
+### Removed
+
+- `LiveOverrideCheck`, a scratch diagnostic that was committed by mistake in #2. It
+  asserted nothing, slept three seconds on every run and read the live process table, so it
+  could never fail and could never mean anything on another machine. Dropping it takes the
+  suite from 4,2 s back to 1,1 s.
+
 ### Added
 
 - The evidence log gains two columns. `limit_source` names which ceiling produced the
@@ -49,16 +72,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cpu_idle=0` at 23:01 — so it never accumulated the required two idle hours and was
   treated as an active session throughout. The manual cleanup at 22:42 reported
   `no-targets` against 2038 zombies. Once free slots fall to or below 5 % of the effective
-  limit, the idle protection may now be bypassed for one parent per run, the one holding
-  the most zombies: a session that cannot `fork()` is already broken, so the rule has
-  nothing left to protect. The unconditional protections (PID ≤ 1, foreign uid, own
-  ancestry) are still evaluated first and cannot be reached by pressure; a parent whose
-  idle signals are unreadable is still never overridden, because absence of evidence must
-  not read as evidence of idleness; and the allowlist and zombie threshold still apply,
-  with a candidate they reject not consuming the run's single override. Overrides are
-  reported separately everywhere: `override=emergency` in the CSV, a
-  `Notfall-Bereinigung:` prefix on the run summary, and a distinct `emergencyBudgetSpent`
-  skip reason. The whole mechanism can be switched off in the preferences.
+  limit, the idle protection may now be bypassed until the projection is back under the
+  critical threshold: a session that cannot `fork()` is already broken, so the rule has
+  nothing left to protect. Targets are taken stalest first, by session log age, and the
+  unconditional protections (PID ≤ 1, foreign uid, own ancestry) are still evaluated first
+  and cannot be reached by pressure; a parent whose idle signals are unreadable is still
+  never overridden, because absence of evidence must not read as evidence of idleness; and
+  the allowlist and zombie threshold still apply, with a candidate they reject
+  contributing no relief to the projection. Overrides are reported separately everywhere:
+  `override=emergency` in the CSV, a `Notfall-Bereinigung:` prefix on the run summary, and
+  a distinct `emergencyReliefReached` skip reason. The whole mechanism can be switched off
+  in the preferences.
 
 - A PID is not an identity. Targets were selected against a snapshot and then signalled by
   PID alone, so a target that exited between selection and delivery could have its number
