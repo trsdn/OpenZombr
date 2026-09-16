@@ -16,6 +16,7 @@ reintroduce bugs that were already paid for.
 
 ```
 Package.swift                 SwiftPM manifest (no Xcode project, and none should be added)
+Package.resolved              committed lock; must match the broker's copy (see Releases)
 Makefile                      build / run / test / bundle / install / clean
 scripts/build_swift_app.sh    produces dist/OpenZombr.app
 Sources/OpenZombr/            library target OpenZombrKit
@@ -27,7 +28,8 @@ Sources/OpenZombr/            library target OpenZombrKit
   Notifications/              alert copy and UNUserNotificationCenter delivery
   Preferences/                UserDefaults-backed settings, SMAppService login item
   Sampling/                   sysctl process table reader and sampler
-  UI/                         menu bar content, preferences window
+  UI/                         menu bar content, preferences window, update items
+  Updates/                    AppUpdater-backed UpdateManager
   Info.plist                  LSUIElement=true; `__VERSION__` substituted at bundle time
 Sources/OpenZombrApp/         entry point; `--probe`, `--idle-watch`, `--log-probe`, `--login-item`
 Tests/OpenZombrTests/         unit tests
@@ -139,6 +141,71 @@ must remain proven by tests:
 
 `SysctlProcessEnumeratorTests` runs against the live machine and asserts only invariants
 that hold on any Mac, because the process table changes between calls.
+
+## Releases
+
+Notarised builds come from `trsdn/macos-notarization-broker`, not from here. There is no
+release workflow in this repository and there must not be one again: the broker exists so
+Apple credentials never reach source-repository code, and a second path would drift out of
+sync with the reviewed profile. Do not add a local signing or notarisation path either —
+`make bundle` signs for local use only.
+
+To release, add the `CHANGELOG.md` heading, tag `vX.Y.Z` and publish the GitHub release,
+then from a broker checkout run:
+
+```bash
+scripts/request.sh openzombr vX.Y.Z --publish
+```
+
+The broker profile `openzombr` builds with
+`swift build --configuration release --product OpenZombr --only-use-versions-from-resolved-file`,
+assembles the app from `Sources/OpenZombr/Info.plist` (substituting `__VERSION__`, requiring
+`LSUIElement`), signs it with Developer ID and the hardened runtime, notarises it and
+uploads the assets to the release. Nothing checks any more that the `CHANGELOG.md` heading
+matches the tag, so check it by hand: `make bundle` stamps local builds from that heading.
+
+Changing the bundle identifier, executable or product name, `Info.plist` layout, minimum
+macOS version, the set of bundled resources or adding entitlements breaks the broker profile
+and requires a reviewed change there first.
+
+### In-app updates depend on the release layout and the broker
+
+`UpdateManager` uses [AppUpdater](https://github.com/mxcl/AppUpdater) 4.1.2. A background
+check fails only into the log, so any of the following being wrong looks like "no update"
+from the outside:
+
+* **Asset name.** AppUpdater only looks at an asset named exactly `OpenZombr-X.Y.Z.dmg` —
+  no `v`, no architecture suffix. The broker publishes `OpenZombr-vX.Y.Z-macOS-arm64.zip`
+  and `OpenZombr-vX.Y.Z-macOS-arm64.dmg` plus an identical copy under that name. A release
+  without it is invisible to installed copies.
+* **Signature.** AppUpdater installs only an app with the same Developer ID Team ID,
+  signing identifier and bundle identifier as the running one. Ad-hoc signed builds (0.2.0
+  and earlier) can never update themselves; those users reinstall once by hand.
+* **No attestation policy.** The broker builds in its own repository, so there is no
+  GitHub artifact attestation from `trsdn/OpenZombr` to verify. Do not add a
+  `GitHubAttestationPolicy` unless releases are built here. If one is ever added, note that
+  SwiftPM's generated `Bundle.module` looks for the trust roots next to the `.app`, not in
+  `Contents/Resources`, so the lookup would have to be solved first.
+* **Resource bundle.** Linking AppUpdater produces `AppUpdater_AppUpdater.bundle` (the
+  Sigstore trust roots, no code) next to the binary. `scripts/build_swift_app.sh` and the
+  broker profile both copy it into `Contents/Resources/`; the broker rejects nested bundles
+  its profile does not declare.
+* **Pinned lock.** AppUpdater is pinned with `exact:` in `Package.swift` and
+  `Package.resolved` is committed. The broker refuses to build unless the source lock equals
+  its own copy, so updating the dependency means updating both files here *and* the
+  broker's copy in the same release cycle. CI resolves with
+  `--only-use-versions-from-resolved-file` to catch a lock that drifted from the manifest.
+
+### Installing an update must not interrupt a termination
+
+Installing quits the process. `UpdateManager.installAndRelaunch` therefore calls
+`ZombrModel.haltForUpdate()` first, which stops polling, forbids any new cleanup, and
+returns only once a running one — SIGTERM, grace period, SIGKILL, verification and the
+evidence log row — has finished. AppUpdater launches the new instance before quitting the
+old one; if anything fails it rolls the bundle back and monitoring resumes via
+`resumeAfterFailedUpdate()`, because a watchdog left halted is blind. Automatic checks are
+deferred while severity is critical, since checking, mounting and verifying an update all
+fork. `UpdateHaltTests` pins the ordering down.
 
 ## Conventions
 

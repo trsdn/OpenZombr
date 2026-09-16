@@ -645,22 +645,27 @@ working process alone and tell the user why.
 
 ### From a release
 
-Download `OpenZombr-<version>.zip` from the
-[releases page](https://github.com/trsdn/OpenZombr/releases), unzip it, and move
-`OpenZombr.app` to `/Applications`.
+Download `OpenZombr-v<version>-macOS-arm64.dmg` (or the `.zip`) from the
+[releases page](https://github.com/trsdn/OpenZombr/releases) and move `OpenZombr.app` to
+`/Applications`.
 
-The build is **ad-hoc signed, not notarised** — there is no Apple Developer ID behind this
-project — so Gatekeeper will refuse the first launch. Clear the quarantine attribute
-yourself, after checking the published SHA-256 against the downloaded file:
+Releases after 0.2.0 are **signed with a Developer ID and notarised by Apple**, so they
+open without any Gatekeeper workaround. They are built by
+[macos-notarization-broker](https://github.com/trsdn/macos-notarization-broker) from the
+tagged source, not on a developer machine.
+
+0.2.0 and earlier were ad-hoc signed and not notarised. If you install one of those, clear
+the quarantine attribute yourself after checking the published SHA-256:
 
 ```bash
 shasum -a 256 OpenZombr-<version>.zip     # compare with checksum.txt on the release
 xattr -dr com.apple.quarantine /Applications/OpenZombr.app
-open /Applications/OpenZombr.app
 ```
 
+Those builds cannot update themselves (see below); replace them with a newer release once.
+
 Given that this app sends `SIGKILL` to processes on your behalf, building it yourself from
-source is the better option, and it is one command.
+source remains a good option, and it is one command.
 
 ### From source
 
@@ -707,16 +712,40 @@ repeated before the `SIGKILL` escalation, because the grace period is itself a w
 which the target can exit and its number be reissued. An identity that differs, or that
 cannot be read at all, aborts the termination and is logged as `identity-changed`.
 
+## Updates
+
+OpenZombr checks GitHub Releases once a day and offers new versions in the menu
+(*Nach Updates suchen …*, *Automatisch nach Updates suchen*, and
+*Update X.Y.Z installieren und neu starten* once one has been downloaded). The same
+controls are in the preferences under *Updates*. Automatic checks can be switched off;
+a failed background check is only logged (`log stream --predicate
+'subsystem == "com.openzombr.app"'`), a check you start yourself always reports back.
+
+Updates use [AppUpdater](https://github.com/mxcl/AppUpdater). A download is installed only
+if it carries the same Developer ID team, signing identifier and bundle identifier as the
+running app. Before the app is replaced, monitoring stops and any cleanup that is already
+under way — including the `SIGKILL` escalation — is allowed to finish; the menu shows
+*warte auf laufende Bereinigung* meanwhile. If the install fails, the old app stays in
+place and monitoring resumes. Checks are postponed while the process table is critical,
+because checking and verifying an update needs new processes.
+
+Builds from source update themselves only if they are signed with the same Developer ID as
+the releases; otherwise the check fails with a signature mismatch.
+
 ## Continuous integration
 
 | Workflow | Runs on | What it proves |
 | --- | --- | --- |
 | `validate-swift` | push to `master`, PRs | debug + release build, the full test suite, that the unsigned bundle assembles, that `LSUIElement` survives into `Info.plist`, and that `--probe` reads the runner's own process table |
 | `secret-scan` | push to `master`, PRs | no credential-shaped strings in the tree or in the pushed commits |
-| `release` | publishing a release | tests, a version-stamped bundle whose `CFBundleShortVersionString` must equal the tag, and a zip plus SHA-256 attached to the release |
 
-The release workflow refuses to publish if the bundle version and the tag disagree, so a
-forgotten `CHANGELOG.md` heading fails the build instead of shipping a mislabelled app.
+`validate-swift` resolves dependencies strictly from the committed `Package.resolved` and
+checks that the AppUpdater resource bundle lands in the app, matching how releases are
+built.
+
+There is no release workflow. Signed, notarised releases are produced and uploaded by
+[macos-notarization-broker](https://github.com/trsdn/macos-notarization-broker) (profile
+`openzombr`); see `AGENTS.md`.
 
 ### Verifying the reader by hand
 
@@ -734,7 +763,7 @@ and quietly stops matching everywhere else.
 ## Repository layout
 
 ```
-Sources/OpenZombr/        app code (library target OpenZombrKit)
+Sources/OpenZombr/        app code (library target OpenZombrKit), including Updates/
 Sources/OpenZombrApp/     executable entry point
 Tests/OpenZombrTests/     unit tests
 scripts/                  .app bundling
