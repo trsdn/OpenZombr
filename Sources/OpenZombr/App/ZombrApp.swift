@@ -4,13 +4,18 @@ import SwiftUI
 /// Menu-bar-only app. No Dock icon, no window on launch.
 public struct ZombrApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = ZombrModel()
+    @StateObject private var model: ZombrModel
+    @StateObject private var updates: UpdateManager
 
-    public init() {}
+    public init() {
+        let model = ZombrModel()
+        _model = StateObject(wrappedValue: model)
+        _updates = StateObject(wrappedValue: UpdateManager(host: model))
+    }
 
     public var body: some Scene {
         MenuBarExtra {
-            MenuBarContentView(model: model)
+            MenuBarContentView(model: model, updates: updates)
         } label: {
             // Glyph plus compact figure. The glyph changes shape with severity, so the
             // state stays readable as a template image in light and dark menu bars.
@@ -21,12 +26,15 @@ public struct ZombrApp: App {
                 Image(systemName: model.severity.symbolName)
                 Text(model.menuBarTitle)
             }
-            .onAppear { model.start() }
+            .onAppear {
+                model.start()
+                updates.startAutomaticChecks()
+            }
         }
         .menuBarExtraStyle(.menu)
 
         Settings {
-            PreferencesView(preferences: model.preferences)
+            PreferencesView(preferences: model.preferences, updates: updates)
         }
     }
 }

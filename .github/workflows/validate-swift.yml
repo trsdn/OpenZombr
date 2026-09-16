@@ -28,8 +28,11 @@ jobs:
           xcodebuild -version
           swift --version
 
-      - name: Resolve package dependencies
-        run: swift package resolve
+      # The notarization broker builds with the same flag against its own copy of the
+      # lock, so a Package.resolved that does not match Package.swift must fail here
+      # rather than on release day.
+      - name: Resolve package dependencies from the committed lock
+        run: swift package resolve --only-use-versions-from-resolved-file
 
       - name: Build debug
         run: swift build -c debug
@@ -54,6 +57,11 @@ jobs:
           test "$(plutil -extract LSUIElement raw "$plist")" = "true"
           plutil -extract CFBundleIdentifier raw "$plist"
           plutil -extract CFBundleShortVersionString raw "$plist"
+
+      # The broker's openzombr profile copies the same resource bundle; a local bundle
+      # without it would no longer resemble what ships.
+      - name: Verify the AppUpdater resource bundle is embedded
+        run: test -f dist/OpenZombr.app/Contents/Resources/AppUpdater_AppUpdater.bundle/trusted-root.json
 
       # --probe reads the live process table through sysctl. Running it here proves
       # the sampler works on a stock runner and never shells out to `ps`, which

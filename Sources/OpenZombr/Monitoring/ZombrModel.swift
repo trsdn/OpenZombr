@@ -10,6 +10,9 @@ public final class ZombrModel: ObservableObject {
     @Published public private(set) var lastError: String?
     @Published public private(set) var lastCleanup: CleanupReport?
     @Published public private(set) var isCleaning = false
+    /// Set while an update is being installed. No cleanup may *start* once this is true;
+    /// one already running is allowed to finish, and the installer waits for it.
+    @Published public private(set) var isHaltedForUpdate = false
     /// When the last sample actually succeeded.
     ///
     /// A failing poll leaves `snapshot` untouched, so without this the UI would keep
@@ -88,7 +91,7 @@ public final class ZombrModel: ObservableObject {
     // MARK: - Lifecycle
 
     public func start() {
-        guard timer == nil else { return }
+        guard timer == nil, !isHaltedForUpdate else { return }
         poll()
         restartTimer()
     }
@@ -98,8 +101,39 @@ public final class ZombrModel: ObservableObject {
         timer = nil
     }
 
+    // MARK: - Updates
+
+    /// Stops polling and returns only once no termination is in flight.
+    ///
+    /// Replacing the bundle quits this process. Quitting between the SIGTERM and the
+    /// SIGKILL of a cleanup would leave a half-terminated wrapper and a report that never
+    /// reaches the evidence log, so the installer must wait for the whole run —
+    /// escalation, verification re-sample and logging — rather than interrupt it. The
+    /// flag is set before the wait, on the main actor, so no new run can slip in behind
+    /// the one being waited for.
+    public func haltForUpdate() async {
+        isHaltedForUpdate = true
+        stop()
+        // Unbounded on purpose: a run is bounded by `maximumTargetsPerRun` grace periods,
+        // and giving up early would reintroduce exactly the interruption this prevents.
+        while isCleaning {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// Undoes `haltForUpdate` after an install that did not quit the app. AppUpdater rolls
+    /// the bundle back in that case, and a watchdog left halted would be blind without
+    /// saying so.
+    public func resumeAfterFailedUpdate() {
+        isHaltedForUpdate = false
+        start()
+    }
+
     private func restartTimer() {
         timer?.invalidate()
+        timer = nil
+        // The interval publisher can fire while halted; it must not revive the timer.
+        guard !isHaltedForUpdate else { return }
         let timer = Timer.scheduledTimer(
             withTimeInterval: preferences.pollInterval, repeats: true
         ) { [weak self] _ in
@@ -171,6 +205,7 @@ public final class ZombrModel: ObservableObject {
     /// ago; the reaper's identity check would then refuse every target and the button
     /// would appear broken. Sampling here costs one sysctl and makes the decision current.
     public func cleanupNow() {
+        guard !isHaltedForUpdate else { return }
         if let fresh = try? sampler.sample(idleTracker: idleTracker) {
             snapshot = fresh
             lastSuccessfulPoll = Date()
@@ -183,7 +218,7 @@ public final class ZombrModel: ObservableObject {
     }
 
     private func runCleanup(snapshot: ZombieSnapshot) {
-        guard !isCleaning else { return }
+        guard !isCleaning, !isHaltedForUpdate else { return }
         isCleaning = true
         let policy = preferences.cleanupPolicy
         let service = cleanupService

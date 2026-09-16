@@ -2,9 +2,11 @@ import SwiftUI
 
 public struct PreferencesView: View {
     @ObservedObject var preferences: Preferences
+    let updates: UpdateManager
 
-    public init(preferences: Preferences) {
+    public init(preferences: Preferences, updates: UpdateManager) {
         self.preferences = preferences
+        self.updates = updates
     }
 
     public var body: some View {
@@ -142,6 +144,8 @@ public struct PreferencesView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            UpdateSettingsSection(updates: updates)
         }
         .formStyle(.grouped)
         .frame(width: 460)

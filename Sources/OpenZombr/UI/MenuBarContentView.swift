@@ -4,9 +4,11 @@ import SwiftUI
 /// The dropdown menu. German UI copy; English code and comments.
 public struct MenuBarContentView: View {
     @ObservedObject var model: ZombrModel
+    let updates: UpdateManager
 
-    public init(model: ZombrModel) {
+    public init(model: ZombrModel, updates: UpdateManager) {
         self.model = model
+        self.updates = updates
     }
 
     public var body: some View {
@@ -82,6 +84,10 @@ public struct MenuBarContentView: View {
         SettingsLink {
             Text("Einstellungen …")
         }
+
+        Divider()
+
+        UpdateMenuItems(updates: updates)
 
         Divider()
 

@@ -46,6 +46,18 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
+# AppUpdater ships its Sigstore trust roots as a SwiftPM resource bundle. Only its
+# attestation path reads them, and this app does not use that path (see AGENTS.md), but
+# the broker profile assembles the notarised app with the bundle in Contents/Resources and
+# a local bundle that differs from the released one proves nothing about it.
+BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+UPDATER_BUNDLE="AppUpdater_AppUpdater.bundle"
+if [[ ! -d "$BIN_DIR/$UPDATER_BUNDLE" ]]; then
+  echo "Build failed: $UPDATER_BUNDLE not found in $BIN_DIR" >&2
+  exit 1
+fi
+cp -R "$BIN_DIR/$UPDATER_BUNDLE" "$APP_DIR/Contents/Resources/"
+
 # Info.plist carries LSUIElement=true, which is what keeps this a menu-bar-only app
 # with no Dock icon.
 sed "s/__VERSION__/$VERSION/g" "Sources/$APP_NAME/Info.plist" > "$APP_DIR/Contents/Info.plist"

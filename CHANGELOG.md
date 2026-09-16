@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The `release` workflow. Releases are now built, signed with a Developer ID, notarised and
+  uploaded by `trsdn/macos-notarization-broker` (profile `openzombr`), which is also what
+  in-app updates require: AppUpdater refuses the ad-hoc signed builds that workflow
+  produced. The `xattr` step is no longer needed for new releases; 0.2.0 and earlier must
+  be replaced by hand once.
 - `LiveOverrideCheck`, a scratch diagnostic that was committed by mistake in #2. It
   asserted nothing, slept three seconds on every run and read the live process table, so it
   could never fail and could never mean anything on another machine. Dropping it takes the
@@ -32,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **In-app updates** via [AppUpdater](https://github.com/mxcl/AppUpdater) 4.1.2. The app
+  checks GitHub Releases once a day (switchable in the menu and the preferences), downloads
+  and verifies a new version in the background, and offers *Update X.Y.Z installieren und
+  neu starten*. Before the bundle is replaced, polling stops and a cleanup already in
+  flight is allowed to finish, so an install can never quit the app between `SIGTERM` and
+  `SIGKILL`; a failed install leaves the old app in place and resumes monitoring. Automatic
+  checks are postponed while the process table is critical, because checking forks.
 - The evidence log gains two columns. `limit_source` names which ceiling produced the
   `limit` value (`per-uid`, `rlimit-nproc` or `system-wide`), without which the incident of
   2026-08-29 is unreadable after the fact — every row claimed `limit=4000` while `fork()`
