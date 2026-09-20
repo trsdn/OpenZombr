@@ -20,8 +20,9 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// A parent is only ever considered once it owns at least this many zombies.
     /// Reaping a handful of zombies is not worth killing a process over.
     public var minimumZombiesPerParent: Int
-    /// Case-insensitive substring patterns matched against the parent's name and full
-    /// executable path. At least one must match.
+    /// Case-insensitive substring patterns. One without a `/` is matched against the
+    /// parent's name and executable file name, one with a `/` against the full executable
+    /// path. At least one must match.
     public var allowedNamePatterns: [String]
     /// Patterns that veto a match even when the allowlist accepted it. The denylist
     /// always wins.
@@ -142,13 +143,24 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// read as "not denied". The allowlist already behaves that way, since a pattern that
     /// cannot match never permits.
     public func permits(_ parent: ZombieParent) -> Bool {
-        let haystack = parent.matchableText.lowercased()
         guard !allowedNamePatterns.isEmpty else { return false }
         if parent.executablePath == nil, !deniedNamePatterns.isEmpty { return false }
-        if deniedNamePatterns.contains(where: { haystack.contains($0.lowercased()) }) {
+
+        // The veto looks at everything: a deny entry anywhere in the name or path wins.
+        let full = parent.matchableText.lowercased()
+        if deniedNamePatterns.contains(where: { full.contains($0.lowercased()) }) {
             return false
         }
-        return allowedNamePatterns.contains(where: { haystack.contains($0.lowercased()) })
+        // A grant is narrower. A pattern without a `/` names a program, so it is matched
+        // against the process name and the executable's file name — not against the
+        // directories above it, where `agency` would also match `/x/agency-tools/anything`.
+        // A pattern with a `/` is a path fragment and is matched against the whole path.
+        let names = [parent.name, parent.executablePath.map { ($0 as NSString).lastPathComponent }]
+            .compactMap { $0 }.joined(separator: " ").lowercased()
+        return allowedNamePatterns.contains { pattern in
+            let lowered = pattern.lowercased()
+            return lowered.contains("/") ? full.contains(lowered) : names.contains(lowered)
+        }
     }
 }
 

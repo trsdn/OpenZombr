@@ -41,7 +41,10 @@ public final class ZombrModel: ObservableObject {
     private let sampler: ZombieSampler
     /// Owned here rather than by the sampler because it accumulates state across polls.
     /// Only touched from the main actor, where polling happens.
-    private let idleTracker = IdleTracker()
+    private let idleTracker = IdleTracker(awakeClock: {
+        // Excludes time spent asleep, unlike `Date`.
+        ProcessInfo.processInfo.systemUptime
+    })
     private let cleanupService: CleanupService
     private let reaper: ZombieReaper
     private let notifier: AlertNotifying
