@@ -277,7 +277,8 @@ final class ReaperSafetyTests: XCTestCase {
     // MARK: - PID reuse
 
     /// A PID is not an identity. Selection runs against a snapshot that can be minutes
-    /// old (`cleanupNow` may reuse one up to `maximumPollInterval` = 3600 s), and the
+    /// old (auto-cleanup acts on the poll's snapshot, and a slow poll leaves minutes
+    /// between sampling and the last signal in a long run), and the
     /// machine hands out PIDs fast: 160 in 20 seconds measured while *idle*. If the
     /// target exited and its number was reissued, the replacement must not be signalled.
     func testDoesNotSignalAPIDThatNowBelongsToSomeoneElse() {

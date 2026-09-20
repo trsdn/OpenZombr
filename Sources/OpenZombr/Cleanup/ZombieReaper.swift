@@ -349,8 +349,14 @@ public struct ZombieReaper: Sendable {
         }
         // Unreadable is not "unchanged". Refusing to signal costs one poll interval;
         // signalling the wrong process costs the user their work.
-        guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
-            return result(.identityChanged)
+        switch signaller.verifyIdentity(ofPID: parent.pid, matches: approved) {
+        case .matches: break
+        case .differs: return result(.identityChanged)
+        case .unreadable:
+            // A process that exited after the liveness check above has no kernel entry, so
+            // its identity reads as unreadable. Gone is not the same as reused: report it
+            // as gone. Still alive and unreadable stays a refusal.
+            return result(signaller.isAlive(pid: parent.pid) ? .identityChanged : .alreadyGone)
         }
 
         guard signaller.send(signal: SIGTERM, to: parent.pid) else {
@@ -367,8 +373,14 @@ public struct ZombieReaper: Sendable {
 
         // The grace period is the widest reuse window in the whole routine: the target was
         // just asked to exit, so it is more likely than usual to have done so.
-        guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
-            return result(.identityChanged)
+        switch signaller.verifyIdentity(ofPID: parent.pid, matches: approved) {
+        case .matches: break
+        case .differs: return result(.identityChanged)
+        case .unreadable:
+            // It may have exited on SIGTERM just after the liveness check; that is the
+            // termination working, not a failure.
+            return result(
+                signaller.isAlive(pid: parent.pid) ? .identityChanged : .terminatedBySIGTERM)
         }
 
         guard signaller.send(signal: SIGKILL, to: parent.pid) else {

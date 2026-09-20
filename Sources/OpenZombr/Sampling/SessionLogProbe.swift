@@ -109,6 +109,18 @@ public struct SessionLogProbe: SessionLogProbing {
             }
 
             sawAnyFile = true
+            // Nothing can have been written after a file's own modification time, so one
+            // untouched for longer than the reader's horizon cannot hold activity newer
+            // than that — and every age beyond the horizon already reads as idle. Skipping
+            // the read keeps the per-poll cost bounded on a directory that accumulates
+            // logs. This only ever *lowers* what is read; `mtime` is never used to make a
+            // file look recent, which is the mistake `SessionLogReader` documents.
+            if let modified = try? fileManager.attributesOfItem(atPath: path)[.modificationDate]
+                as? Date, now.timeIntervalSince(modified) >= reader.horizon
+            {
+                newest = max(newest ?? modified, modified)
+                continue
+            }
             guard let bound = reader.activityBound(ofFileAt: path, now: now).lastActivityBound
             else { return nil }
             newest = max(newest ?? bound, bound)

@@ -136,9 +136,15 @@ public struct CleanupPolicy: Sendable, Equatable {
     /// Substring matching, not regex: the patterns are typed by a user into a
     /// preferences field, and a malformed regex silently matching everything would be a
     /// dangerous failure mode for something that sends SIGKILL.
+    ///
+    /// The denylist fails closed on missing evidence: with a deny entry configured and no
+    /// resolved path, a path-based entry cannot be evaluated, and "cannot tell" must not
+    /// read as "not denied". The allowlist already behaves that way, since a pattern that
+    /// cannot match never permits.
     public func permits(_ parent: ZombieParent) -> Bool {
         let haystack = parent.matchableText.lowercased()
         guard !allowedNamePatterns.isEmpty else { return false }
+        if parent.executablePath == nil, !deniedNamePatterns.isEmpty { return false }
         if deniedNamePatterns.contains(where: { haystack.contains($0.lowercased()) }) {
             return false
         }
