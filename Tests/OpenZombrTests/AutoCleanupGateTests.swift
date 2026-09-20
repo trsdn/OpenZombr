@@ -64,12 +64,12 @@ final class AutoCleanupGateTests: XCTestCase {
 
     /// One critical reading is not confirmation. This is the entire reason
     /// `ThresholdMonitor` requires consecutive samples.
-    func testASingleCriticalSampleDoesNotStartACleanup() {
+    func testASingleCriticalSampleDoesNotStartACleanup() async {
         let signaller = FakeSignaller(alive: [600], lethalSignal: [600: SIGKILL])
         let model = makeModel(signaller: signaller)
         defer { model.stop() }
 
-        model.poll()
+        await model.poll()
 
         XCTAssertEqual(model.severity, .critical, "the menu may react to one sample")
         XCTAssertFalse(model.isCleaning)
@@ -81,8 +81,8 @@ final class AutoCleanupGateTests: XCTestCase {
         let model = makeModel(signaller: signaller)
         defer { model.stop() }
 
-        model.poll()
-        model.poll()
+        await model.poll()
+        await model.poll()
         XCTAssertTrue(model.isCleaning)
         try await settle(model)
 
@@ -94,7 +94,7 @@ final class AutoCleanupGateTests: XCTestCase {
         let model = makeModel(signaller: signaller, autoCleanup: false)
         defer { model.stop() }
 
-        for _ in 0..<5 { model.poll() }
+        for _ in 0..<5 { await model.poll() }
 
         XCTAssertFalse(model.isCleaning)
         XCTAssertTrue(signaller.signalledPIDs.isEmpty)
@@ -106,7 +106,7 @@ final class AutoCleanupGateTests: XCTestCase {
         defer { model.stop() }
 
         await model.haltForUpdate()
-        for _ in 0..<5 { model.poll() }
+        for _ in 0..<5 { await model.poll() }
 
         XCTAssertFalse(model.isCleaning)
         XCTAssertTrue(signaller.signalledPIDs.isEmpty)
@@ -119,13 +119,13 @@ final class AutoCleanupGateTests: XCTestCase {
         let model = makeModel(signaller: signaller)
         defer { model.stop() }
 
-        model.poll()
-        model.poll()
+        await model.poll()
+        await model.poll()
         try await settle(model)
         XCTAssertEqual(signaller.signals(for: 600), [SIGTERM, SIGKILL])
 
         for _ in 0..<4 {
-            model.poll()
+            await model.poll()
             try await settle(model)
         }
         XCTAssertEqual(

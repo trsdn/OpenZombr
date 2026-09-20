@@ -57,44 +57,44 @@ final class StaleSnapshotCleanupTests: XCTestCase {
 
     /// The snapshot is seconds old, so it is still the current picture and the button keeps
     /// working through a transient sampling failure.
-    func testAFreshSnapshotStandsInForAFailedSample() {
+    func testAFreshSnapshotStandsInForAFailedSample() async {
         let enumerator = FlakyEnumerator(entries: entries())
         let signaller = FakeSignaller(alive: [600], lethalSignal: [600: SIGKILL])
         let model = makeModel(enumerator: enumerator, signaller: signaller)
         defer { model.stop() }
 
-        model.poll()
+        await model.poll()
         enumerator.failing = true
-        model.cleanupNow(now: Date().addingTimeInterval(5))
+        await model.cleanupNow(now: Date().addingTimeInterval(5))
 
         XCTAssertTrue(model.isCleaning)
     }
 
     /// An hour-old snapshot says nothing about whether the session is busy *now*. Acting on
     /// it would sidestep the rule that ancestry and liveness are recomputed on every poll.
-    func testAStaleSnapshotDoesNotStandInForAFailedSample() {
+    func testAStaleSnapshotDoesNotStandInForAFailedSample() async {
         let enumerator = FlakyEnumerator(entries: entries())
         let signaller = FakeSignaller(alive: [600], lethalSignal: [600: SIGKILL])
         let model = makeModel(enumerator: enumerator, signaller: signaller)
         defer { model.stop() }
 
-        model.poll()
+        await model.poll()
         enumerator.failing = true
-        model.cleanupNow(now: Date().addingTimeInterval(3600))
+        await model.cleanupNow(now: Date().addingTimeInterval(3600))
 
         XCTAssertFalse(model.isCleaning)
         XCTAssertTrue(signaller.signalledPIDs.isEmpty)
         XCTAssertNotNil(model.lastError, "refusing must be visible, not silent")
     }
 
-    func testNoSnapshotAndNoSampleDoesNothingVisibly() {
+    func testNoSnapshotAndNoSampleDoesNothingVisibly() async {
         let enumerator = FlakyEnumerator(entries: entries())
         enumerator.failing = true
         let signaller = FakeSignaller(alive: [600])
         let model = makeModel(enumerator: enumerator, signaller: signaller)
         defer { model.stop() }
 
-        model.cleanupNow()
+        await model.cleanupNow()
 
         XCTAssertFalse(model.isCleaning)
         XCTAssertTrue(signaller.signalledPIDs.isEmpty)

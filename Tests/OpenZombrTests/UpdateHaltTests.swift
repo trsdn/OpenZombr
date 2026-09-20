@@ -55,7 +55,7 @@ final class UpdateHaltTests: XCTestCase {
         let model = makeModel(signaller: signaller, graceSleeper: gate)
         defer { model.stop() }
 
-        model.cleanupNow()
+        await model.cleanupNow()
         XCTAssertTrue(model.isCleaning)
         // Parked inside the grace period: SIGTERM sent, SIGKILL not yet.
         await Task.detached { gate.waitUntilEntered() }.value
@@ -85,13 +85,13 @@ final class UpdateHaltTests: XCTestCase {
         defer { model.stop() }
 
         await model.haltForUpdate()
-        model.cleanupNow()
+        await model.cleanupNow()
         XCTAssertFalse(model.isCleaning)
         XCTAssertTrue(signaller.signalledPIDs.isEmpty)
 
         model.resumeAfterFailedUpdate()
         XCTAssertFalse(model.isHaltedForUpdate)
-        model.cleanupNow()
+        await model.cleanupNow()
         XCTAssertTrue(model.isCleaning, "a failed install must not leave the watchdog halted")
     }
 }

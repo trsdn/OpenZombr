@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Sampling no longer runs on the main actor.** Reading the process table, `proc_pidinfo`
+  per session child and the tails of session logs happens on a background thread, so a
+  slow sample on a machine that is out of slots can no longer freeze the menu bar item or an
+  open menu. A poll that finds another one still sampling is skipped rather than queued, and
+  a manual cleanup waits for a sample in flight instead of racing it. `IdleTracker` is now
+  internally synchronised, since it is no longer confined to the main actor.
+
+### Fixed
+
 - **The denylist no longer fails open where it is blind.** Executable paths were resolved
   for the 20 largest offenders only, so a path-based deny entry could not match the rest,
   which were compared on their 16-character `p_comm` alone. Every offender is now resolved,

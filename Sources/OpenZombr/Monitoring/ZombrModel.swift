@@ -40,7 +40,7 @@ public final class ZombrModel: ObservableObject {
 
     private let sampler: ZombieSampler
     /// Owned here rather than by the sampler because it accumulates state across polls.
-    /// Only touched from the main actor, where polling happens.
+    /// Read from the sampling thread, so it synchronises itself.
     private let idleTracker = IdleTracker(awakeClock: {
         // Excludes time spent asleep, unlike `Date`.
         ProcessInfo.processInfo.systemUptime
@@ -59,6 +59,9 @@ public final class ZombrModel: ObservableObject {
     /// immediately must not turn into a kill loop.
     public static let autoCleanupCooldown: TimeInterval = 120
     private var lastAutoCleanup: Date?
+    /// True from the moment a sample is handed to the background until its result has been
+    /// applied. Keeps two samples from running at once and from publishing out of order.
+    private var isSampling = false
 
     public init(
         preferences: Preferences = Preferences(),
@@ -95,7 +98,7 @@ public final class ZombrModel: ObservableObject {
 
     public func start() {
         guard timer == nil, !isHaltedForUpdate else { return }
-        poll()
+        Task { await poll() }
         restartTimer()
     }
 
@@ -140,7 +143,7 @@ public final class ZombrModel: ObservableObject {
         let timer = Timer.scheduledTimer(
             withTimeInterval: preferences.pollInterval, repeats: true
         ) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor in await self?.poll() }
         }
         timer.tolerance = preferences.pollInterval * 0.1
         RunLoop.main.add(timer, forMode: .common)
@@ -154,9 +157,31 @@ public final class ZombrModel: ObservableObject {
 
     // MARK: - Polling
 
-    public func poll() {
-        do {
-            let snapshot = try sampler.sample(idleTracker: idleTracker)
+    /// Takes one reading and applies it.
+    ///
+    /// The reading itself — the process table, `proc_pidinfo` per session child and the
+    /// tails of session logs — runs off the main actor, because on a machine that is out of
+    /// slots it can be slow and a blocked main actor freezes the menu bar item. A poll that
+    /// finds another one still sampling is skipped rather than queued behind it.
+    public func poll() async {
+        guard !isSampling else { return }
+        isSampling = true
+        let result = await sampleOffMain()
+        isSampling = false
+        apply(result)
+    }
+
+    private func sampleOffMain() async -> Result<ZombieSnapshot, Error> {
+        let sampler = sampler
+        let tracker = idleTracker
+        return await Task.detached(priority: .utility) {
+            Result { try sampler.sample(idleTracker: tracker) }
+        }.value
+    }
+
+    private func apply(_ result: Result<ZombieSnapshot, Error>) {
+        switch result {
+        case .success(let snapshot):
             self.snapshot = snapshot
             self.lastError = nil
 
@@ -179,7 +204,7 @@ public final class ZombrModel: ObservableObject {
             if monitor.currentSeverity == .critical {
                 maybeAutoCleanup(snapshot: snapshot)
             }
-        } catch {
+        case .failure(let error):
             // German for the menu, since that is where it is read.
             lastError = (error as? ProcessTableError)?.germanDescription ?? "\(error)"
         }
@@ -207,9 +232,16 @@ public final class ZombrModel: ObservableObject {
     /// as high as an hour, so the stored snapshot may name processes that exited long
     /// ago; the reaper's identity check would then refuse every target and the button
     /// would appear broken. Sampling here costs one sysctl and makes the decision current.
-    public func cleanupNow(now: Date = Date()) {
+    public func cleanupNow(now: Date = Date()) async {
         guard !isHaltedForUpdate else { return }
-        if let fresh = try? sampler.sample(idleTracker: idleTracker) {
+        // Wait for a poll that is mid-sample instead of racing it: the idle tracker's
+        // history is per reading, and two readings interleaved would publish out of order.
+        while isSampling { try? await Task.sleep(for: .milliseconds(20)) }
+        guard !isHaltedForUpdate else { return }
+        isSampling = true
+        let result = await sampleOffMain()
+        isSampling = false
+        if case .success(let fresh) = result {
             snapshot = fresh
             lastSuccessfulPoll = Date()
             runCleanup(snapshot: fresh)
@@ -254,7 +286,7 @@ public final class ZombrModel: ObservableObject {
                 // The estimator's history describes the pre-cleanup curve and would
                 // produce a nonsense ETA after a large drop.
                 strongSelf.estimator.reset()
-                strongSelf.poll()
+                Task { @MainActor in await strongSelf.poll() }
             }
         }
     }
