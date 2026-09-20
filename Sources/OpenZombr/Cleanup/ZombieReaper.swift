@@ -214,37 +214,8 @@ public struct ZombieReaper: Sendable {
 
         let threshold = policy.sessionIdleThreshold
         let underPressure = policy.isUnderEmergencyPressure(snapshot)
-        let ordered = snapshot.offenders.sorted { lhs, rhs in
-            let lhsBusy = lhs.isSessionActive(idleThreshold: threshold)
-            let rhsBusy = rhs.isSessionActive(idleThreshold: threshold)
-            if lhsBusy != rhsBusy { return !lhsBusy }
-
-            // Among parents that all still count as busy, the one to sacrifice first is
-            // the one with the oldest sign of life — never the one holding the most
-            // zombies. This only matters because the emergency override can now reach a
-            // busy parent, and getting it wrong is expensive: measured live at 93 % usage,
-            // three wrappers all read "active" holding 262 / 257 / 249 zombies with log
-            // ages of 16 s, 4736 s and 5206 s. Ranking by zombie count picked the
-            // 16-second-old one — the session the user was sitting in — to gain 13 zombies
-            // over one that had been silent for 87 minutes.
-            //
-            // The log age leads because it is the stronger of the two signals: a session
-            // delegates its work, so CPU time reads 0 for wrappers that are busy and for
-            // wrappers that are finished alike. An unreadable signal sorts as "just alive",
-            // so it is picked last — and such a parent is barred from the override anyway.
-            if lhsBusy {
-                if lhs.sessionLogAgeSeconds != rhs.sessionLogAgeSeconds {
-                    return (lhs.sessionLogAgeSeconds ?? 0) > (rhs.sessionLogAgeSeconds ?? 0)
-                }
-                if lhs.sessionIdleSeconds != rhs.sessionIdleSeconds {
-                    return (lhs.sessionIdleSeconds ?? 0) > (rhs.sessionIdleSeconds ?? 0)
-                }
-            }
-
-            if lhs.zombieCount != rhs.zombieCount {
-                return lhs.zombieCount > rhs.zombieCount
-            }
-            return lhs.pid < rhs.pid
+        let ordered = snapshot.offenders.sorted {
+            Self.precedes($0, $1, idleThreshold: threshold)
         }
 
         for parent in ordered {
@@ -315,6 +286,49 @@ public struct ZombieReaper: Sendable {
         return Selection(targets: targets, skipped: skipped, emergencyOverrides: overrides)
     }
 
+    /// The order candidates are considered in: idle parents first, then busy ones stalest
+    /// first, then by zombie count and finally pid.
+    ///
+    /// A strict weak ordering, which `sort` requires. An unreadable signal is mapped to 0
+    /// *before* comparing, so "unreadable" and "exactly 0" are the same key and fall through
+    /// to the same tiebreaks. Comparing the optionals first and mapping afterwards made a
+    /// nil equal to 0 without a tiebreak but not equal to another nil, so which parent came
+    /// first depended on how the process table happened to be laid out.
+    static func precedes(
+        _ lhs: ZombieParent, _ rhs: ZombieParent, idleThreshold threshold: TimeInterval
+    ) -> Bool {
+        let lhsBusy = lhs.isSessionActive(idleThreshold: threshold)
+        let rhsBusy = rhs.isSessionActive(idleThreshold: threshold)
+        if lhsBusy != rhsBusy { return !lhsBusy }
+
+        // Among parents that all still count as busy, the one to sacrifice first is
+        // the one with the oldest sign of life — never the one holding the most
+        // zombies. This only matters because the emergency override can now reach a
+        // busy parent, and getting it wrong is expensive: measured live at 93 % usage,
+        // three wrappers all read "active" holding 262 / 257 / 249 zombies with log
+        // ages of 16 s, 4736 s and 5206 s. Ranking by zombie count picked the
+        // 16-second-old one — the session the user was sitting in — to gain 13 zombies
+        // over one that had been silent for 87 minutes.
+        //
+        // The log age leads because it is the stronger of the two signals: a session
+        // delegates its work, so CPU time reads 0 for wrappers that are busy and for
+        // wrappers that are finished alike. An unreadable signal sorts as "just alive",
+        // so it is picked last — and such a parent is barred from the override anyway.
+        if lhsBusy {
+            let lhsAge = lhs.sessionLogAgeSeconds ?? 0
+            let rhsAge = rhs.sessionLogAgeSeconds ?? 0
+            if lhsAge != rhsAge { return lhsAge > rhsAge }
+            let lhsIdle = lhs.sessionIdleSeconds ?? 0
+            let rhsIdle = rhs.sessionIdleSeconds ?? 0
+            if lhsIdle != rhsIdle { return lhsIdle > rhsIdle }
+        }
+
+        if lhs.zombieCount != rhs.zombieCount {
+            return lhs.zombieCount > rhs.zombieCount
+        }
+        return lhs.pid < rhs.pid
+    }
+
     // MARK: - Termination
 
     /// Terminates one parent, escalating SIGTERM → SIGKILL.
@@ -349,8 +363,14 @@ public struct ZombieReaper: Sendable {
         }
         // Unreadable is not "unchanged". Refusing to signal costs one poll interval;
         // signalling the wrong process costs the user their work.
-        guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
-            return result(.identityChanged)
+        switch signaller.verifyIdentity(ofPID: parent.pid, matches: approved) {
+        case .matches: break
+        case .differs: return result(.identityChanged)
+        case .unreadable:
+            // A process that exited after the liveness check above has no kernel entry, so
+            // its identity reads as unreadable. Gone is not the same as reused: report it
+            // as gone. Still alive and unreadable stays a refusal.
+            return result(signaller.isAlive(pid: parent.pid) ? .identityChanged : .alreadyGone)
         }
 
         guard signaller.send(signal: SIGTERM, to: parent.pid) else {
@@ -367,8 +387,14 @@ public struct ZombieReaper: Sendable {
 
         // The grace period is the widest reuse window in the whole routine: the target was
         // just asked to exit, so it is more likely than usual to have done so.
-        guard signaller.verifyIdentity(ofPID: parent.pid, matches: approved) == .matches else {
-            return result(.identityChanged)
+        switch signaller.verifyIdentity(ofPID: parent.pid, matches: approved) {
+        case .matches: break
+        case .differs: return result(.identityChanged)
+        case .unreadable:
+            // It may have exited on SIGTERM just after the liveness check; that is the
+            // termination working, not a failure.
+            return result(
+                signaller.isAlive(pid: parent.pid) ? .identityChanged : .terminatedBySIGTERM)
         }
 
         guard signaller.send(signal: SIGKILL, to: parent.pid) else {

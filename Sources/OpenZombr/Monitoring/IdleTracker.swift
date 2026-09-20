@@ -61,8 +61,39 @@ public final class IdleTracker: @unchecked Sendable {
 
     private let activityRateThreshold: Double
 
-    public init(activityRateThreshold: Double = IdleTracker.defaultActivityRateThreshold) {
+    /// Seconds the machine has been *awake*, or `nil` to trust the wall clock alone.
+    ///
+    /// Wall-clock time keeps running while the Mac sleeps and no process can burn CPU, so a
+    /// session the user was working in at midnight would read as eight hours idle at
+    /// breakfast. Comparing how far the wall clock moved with how far this clock moved
+    /// between two readings reveals the sleep, which is then subtracted. Optional so that
+    /// callers that advance `now` by hand keep exact wall-clock behaviour.
+    private let awakeClock: (() -> TimeInterval)?
+    private var sleepTotal: TimeInterval = 0
+    private var lastClockReading: (date: Date, awake: TimeInterval)?
+
+    /// Wall clock and awake clock may disagree by this much without it being sleep: timer
+    /// coalescing and clock adjustments, not a closed lid.
+    private static let sleepTolerance: TimeInterval = 5
+
+    public init(
+        activityRateThreshold: Double = IdleTracker.defaultActivityRateThreshold,
+        awakeClock: (() -> TimeInterval)? = nil
+    ) {
         self.activityRateThreshold = max(0, activityRateThreshold)
+        self.awakeClock = awakeClock
+    }
+
+    /// `now` with every observed stretch of system sleep taken out.
+    private func awakeNow(_ now: Date) -> Date {
+        guard let awakeClock else { return now }
+        let awake = awakeClock()
+        if let last = lastClockReading {
+            let gap = now.timeIntervalSince(last.date) - (awake - last.awake)
+            if gap > Self.sleepTolerance { sleepTotal += gap }
+        }
+        lastClockReading = (now, awake)
+        return now.addingTimeInterval(-sleepTotal)
     }
 
     /// Records a reading and returns how long the process has been idle, or `nil` when
@@ -78,8 +109,9 @@ public final class IdleTracker: @unchecked Sendable {
         pid: pid_t,
         startTime: Date,
         cpuSeconds: TimeInterval,
-        now: Date
+        now wallNow: Date
     ) -> TimeInterval? {
+        let now = awakeNow(wallNow)
         guard let previous = observations[pid], previous.startTime == startTime else {
             observations[pid] = Observation(
                 startTime: startTime, cpuSeconds: cpuSeconds, readAt: now, lastActive: now)
@@ -107,7 +139,7 @@ public final class IdleTracker: @unchecked Sendable {
     /// Idle duration for a pid without recording a new reading.
     public func idleDuration(for pid: pid_t, now: Date) -> TimeInterval? {
         guard let observation = observations[pid] else { return nil }
-        return max(0, now.timeIntervalSince(observation.lastActive))
+        return max(0, now.addingTimeInterval(-sleepTotal).timeIntervalSince(observation.lastActive))
     }
 
     /// Drops processes that no longer exist, so the table cannot grow without bound on a

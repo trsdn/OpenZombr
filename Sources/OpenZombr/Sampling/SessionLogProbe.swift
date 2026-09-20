@@ -48,6 +48,12 @@ public struct SessionLogProbe: SessionLogProbing {
     /// permanently protected — precisely inverting the guard.
     public static let ignoredNameFragments = ["telemetry"]
 
+    /// Most files one poll will actually open for one session. Files old enough to be
+    /// skipped by `mtime` do not count. Past this the cost is no longer bounded, and reading
+    /// only some of them could miss the one that shows work — so the directory is reported
+    /// as unknown instead, which protects the session and is shown as a degraded state.
+    public static let maximumFilesRead = 32
+
     public init(
         enumerator: ProcessEnumerating = SysctlProcessEnumerator(),
         fileManager: FileManager = .default,
@@ -92,6 +98,7 @@ public struct SessionLogProbe: SessionLogProbing {
 
         var newest: Date?
         var sawAnyFile = false
+        var filesRead = 0
         for name in contents.sorted() {
             let lowercased = name.lowercased()
             if Self.ignoredNameFragments.contains(where: { lowercased.contains($0) }) {
@@ -109,6 +116,20 @@ public struct SessionLogProbe: SessionLogProbing {
             }
 
             sawAnyFile = true
+            // Nothing can have been written after a file's own modification time, so one
+            // untouched for longer than the reader's horizon cannot hold activity newer
+            // than that — and every age beyond the horizon already reads as idle. Skipping
+            // the read keeps the per-poll cost bounded on a directory that accumulates
+            // logs. This only ever *lowers* what is read; `mtime` is never used to make a
+            // file look recent, which is the mistake `SessionLogReader` documents.
+            if let modified = try? fileManager.attributesOfItem(atPath: path)[.modificationDate]
+                as? Date, now.timeIntervalSince(modified) >= reader.horizon
+            {
+                newest = max(newest ?? modified, modified)
+                continue
+            }
+            filesRead += 1
+            if filesRead > Self.maximumFilesRead { return nil }
             guard let bound = reader.activityBound(ofFileAt: path, now: now).lastActivityBound
             else { return nil }
             newest = max(newest ?? bound, bound)

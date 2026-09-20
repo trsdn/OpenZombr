@@ -41,7 +41,10 @@ public final class ZombrModel: ObservableObject {
     private let sampler: ZombieSampler
     /// Owned here rather than by the sampler because it accumulates state across polls.
     /// Only touched from the main actor, where polling happens.
-    private let idleTracker = IdleTracker()
+    private let idleTracker = IdleTracker(awakeClock: {
+        // Excludes time spent asleep, unlike `Date`.
+        ProcessInfo.processInfo.systemUptime
+    })
     private let cleanupService: CleanupService
     private let reaper: ZombieReaper
     private let notifier: AlertNotifying
@@ -204,18 +207,30 @@ public final class ZombrModel: ObservableObject {
     /// as high as an hour, so the stored snapshot may name processes that exited long
     /// ago; the reaper's identity check would then refuse every target and the button
     /// would appear broken. Sampling here costs one sysctl and makes the decision current.
-    public func cleanupNow() {
+    public func cleanupNow(now: Date = Date()) {
         guard !isHaltedForUpdate else { return }
         if let fresh = try? sampler.sample(idleTracker: idleTracker) {
             snapshot = fresh
             lastSuccessfulPoll = Date()
             runCleanup(snapshot: fresh)
-        } else if let snapshot {
-            // Sampling failed. Falling back to the stored snapshot is still safe because
-            // the reaper re-verifies each target's identity before signalling it.
+        } else if let snapshot,
+            now.timeIntervalSince(snapshot.timestamp) <= Self.maximumFallbackSnapshotAge
+        {
+            // Sampling failed, but the stored snapshot is essentially the current picture.
+            // The reaper still re-verifies each target's identity before signalling it.
             runCleanup(snapshot: snapshot)
+        } else {
+            // Identity verification catches pid reuse, not a session that became active or
+            // an ancestry that changed since the snapshot. Those are decided from the
+            // sample, and `poll` may have stored one up to an hour ago, so an old snapshot
+            // must not stand in for a fresh one. Refusing is shown rather than silent.
+            lastError = "Keine aktuelle Messung möglich — Bereinigung abgebrochen."
         }
     }
+
+    /// How old a stored snapshot may be and still replace a failed sample. Seconds, not the
+    /// poll interval: every safety rule that reads liveness was evaluated against it.
+    public static let maximumFallbackSnapshotAge: TimeInterval = 60
 
     private func runCleanup(snapshot: ZombieSnapshot) {
         guard !isCleaning, !isHaltedForUpdate else { return }

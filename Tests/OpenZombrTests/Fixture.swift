@@ -180,6 +180,10 @@ final class FakeSignaller: ProcessSignalling, @unchecked Sendable {
     /// a PID that is reused during the grace period.
     private var verificationAfterFirstRead: [pid_t: IdentityVerification]
     private var verificationReads: [pid_t: Int] = [:]
+    /// Pids that exit while their first / second identity read is in flight, modelling a
+    /// target that disappears between the liveness check and the identity check.
+    private var exitsOnVerification: Set<pid_t>
+    private var exitsOnSecondVerification: Set<pid_t>
     private(set) var deliveries: [Delivery] = []
     private(set) var verifiedPIDs: [pid_t] = []
 
@@ -189,8 +193,12 @@ final class FakeSignaller: ProcessSignalling, @unchecked Sendable {
         undeliverable: Set<pid_t> = [],
         undeliverableSignals: [pid_t: Set<Int32>] = [:],
         verifications: [pid_t: IdentityVerification] = [:],
-        verificationAfterFirstRead: [pid_t: IdentityVerification] = [:]
+        verificationAfterFirstRead: [pid_t: IdentityVerification] = [:],
+        exitsOnVerification: Set<pid_t> = [],
+        exitsOnSecondVerification: Set<pid_t> = []
     ) {
+        self.exitsOnVerification = exitsOnVerification
+        self.exitsOnSecondVerification = exitsOnSecondVerification
         self.alive = alive
         self.lethalSignal = lethalSignal
         self.undeliverable = undeliverable
@@ -223,6 +231,11 @@ final class FakeSignaller: ProcessSignalling, @unchecked Sendable {
         verifiedPIDs.append(pid)
         let reads = (verificationReads[pid] ?? 0) + 1
         verificationReads[pid] = reads
+        if (reads == 1 && exitsOnVerification.contains(pid))
+            || (reads == 2 && exitsOnSecondVerification.contains(pid))
+        {
+            alive.remove(pid)
+        }
         if reads > 1, let later = verificationAfterFirstRead[pid] { return later }
         return verifications[pid] ?? .matches
     }

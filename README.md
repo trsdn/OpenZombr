@@ -187,7 +187,9 @@ These are the rules that matter most, and each one is covered by a unit test:
 * **SIGTERM before SIGKILL.** The known offender ignores SIGTERM, so escalation is
   required — but SIGTERM is still attempted first, escalation happens only after a grace
   period, and which signal actually worked is recorded.
-* **Allowlist/denylist of name patterns**, defaulting to `agency` only, user-editable.
+* **Allowlist/denylist of name patterns**, defaulting to `agency` only, user-editable. A
+  pattern without a `/` is matched against the process name and the executable's file name;
+  one with a `/` against the full path. The denylist always looks at name and full path.
   Matching is plain case-insensitive substring, not regex, because a malformed regex
   silently matching everything would be a catastrophic failure mode for something that
   sends SIGKILL. An empty allowlist matches *nothing*: the policy is fail-closed.

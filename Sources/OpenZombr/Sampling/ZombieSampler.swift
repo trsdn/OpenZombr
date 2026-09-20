@@ -123,8 +123,11 @@ public struct ZombieSampler: Sendable {
     private let currentUID: uid_t
     private let currentPID: pid_t
     private let logProbe: SessionLogProbing
-    /// Resolving executable paths costs one syscall each, so it is limited to the
-    /// parents that could plausibly be targeted.
+    /// Resolving an executable path costs one `proc_pidpath` syscall, and every offender
+    /// needs it: the allow/deny patterns match on name *and* path, and a parent left with
+    /// only its 16-character `p_comm` would slip past a path-based denylist entry. The
+    /// default therefore resolves all of them; the limit exists for callers that want to
+    /// trade that away, and `CleanupPolicy.permits` fails closed for whatever it leaves out.
     private let pathResolutionLimit: Int
 
     public init(
@@ -132,7 +135,7 @@ public struct ZombieSampler: Sendable {
         limitReader: ProcessLimitReading = SysctlProcessLimitReader(),
         currentUID: uid_t = getuid(),
         currentPID: pid_t = getpid(),
-        pathResolutionLimit: Int = 20,
+        pathResolutionLimit: Int = .max,
         logProbe: SessionLogProbing? = nil
     ) {
         self.logProbe = logProbe ?? SessionLogProbe(enumerator: enumerator)

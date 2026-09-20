@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The denylist no longer fails open where it is blind.** Executable paths were resolved
+  for the 20 largest offenders only, so a path-based deny entry could not match the rest,
+  which were compared on their 16-character `p_comm` alone. Every offender is now resolved,
+  and a parent whose path is still unknown is refused whenever a denylist is configured.
+- **A target that exits between the liveness check and the identity check is reported as
+  gone**, not as `identity-changed`. A successful SIGTERM in that window used to be logged
+  as a failure. A live process whose identity cannot be read is still never signalled.
+- **Session logs untouched for longer than the reader's horizon are no longer opened on
+  every poll.** Nothing can be written after a file's modification time, so the file cannot
+  hold newer activity. This bounds the per-poll cost on a directory that accumulates logs;
+  `mtime` is still never used to make a session look recent.
+- **"Jetzt aufräumen" no longer acts on a stored snapshot older than 60 s when the fresh
+  sample fails.** Identity verification covers pid reuse but not a session that became
+  active since; the snapshot can be an hour old. The run is refused with a visible message.
+- **Time the Mac spent asleep no longer counts as CPU-idle time.** A session worked in at
+  midnight read as eight hours idle at breakfast. The tracker now compares the wall clock
+  with the awake clock and subtracts the difference. Both idle signals still have to agree.
+- **Candidate ordering is a strict weak ordering.** An unreadable log age tied with an age of
+  0 without falling through to the zombie count, so the order depended on table layout.
+- **Log directories are read a bounded number of times per poll.** More than 32 files that
+  need reading make the directory *unknown* — which protects the session — rather than
+  reading an unbounded amount or guessing from a subset.
+
+### Changed
+
+- **A plain allowlist pattern names a program, not a directory.** `agency` matched any
+  executable under a folder whose name contained it. Patterns without a `/` are now matched
+  against the process name and executable file name; patterns with a `/` still match the
+  whole path. The denylist is unchanged and still vetoes on name or path.
+
+### Tests
+
+- The path from `poll()` to the destructive path is now covered at model level: the
+  confirmation gate, the cooldown, disabled auto-cleanup and the halted state.
+
 ## [0.3.0] - 2026-09-16
 
 ### Changed
