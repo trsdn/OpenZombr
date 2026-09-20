@@ -69,11 +69,11 @@ public struct MenuBarContentView: View {
         }
 
         Button(model.isCleaning ? "Bereinigung läuft …" : "Jetzt aufräumen") {
-            model.cleanupNow()
+            Task { await model.cleanupNow() }
         }
         .disabled(model.isCleaning || model.snapshot == nil)
 
-        Button("Jetzt messen") { model.poll() }
+        Button("Jetzt messen") { Task { await model.poll() } }
 
         Divider()
 

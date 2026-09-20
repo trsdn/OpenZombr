@@ -26,8 +26,9 @@ import Foundation
 /// *rate*: CPU consumed since the last activity, over the time since then, above
 /// ``activityRateThreshold``.
 ///
-/// Not internally synchronised: it is created and used only from the main actor, where
-/// polling happens, so a lock would add cost for no benefit.
+/// Internally synchronised. Sampling runs on a background thread, and a manual cleanup can
+/// sample while the tail of a poll is still being applied, so it is no longer confined to
+/// the main actor. The lock is uncontended in practice — one reading per session child.
 public final class IdleTracker: @unchecked Sendable {
     private struct Observation {
         /// Guards against pid reuse: a recycled pid has a different start time, and its
@@ -44,6 +45,7 @@ public final class IdleTracker: @unchecked Sendable {
     }
 
     private var observations: [pid_t: Observation] = [:]
+    private let lock = NSLock()
 
     /// Fraction of one core above which a process counts as working.
     ///
@@ -111,6 +113,8 @@ public final class IdleTracker: @unchecked Sendable {
         cpuSeconds: TimeInterval,
         now wallNow: Date
     ) -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
         let now = awakeNow(wallNow)
         guard let previous = observations[pid], previous.startTime == startTime else {
             observations[pid] = Observation(
@@ -138,6 +142,8 @@ public final class IdleTracker: @unchecked Sendable {
 
     /// Idle duration for a pid without recording a new reading.
     public func idleDuration(for pid: pid_t, now: Date) -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
         guard let observation = observations[pid] else { return nil }
         return max(0, now.addingTimeInterval(-sleepTotal).timeIntervalSince(observation.lastActive))
     }
@@ -145,8 +151,14 @@ public final class IdleTracker: @unchecked Sendable {
     /// Drops processes that no longer exist, so the table cannot grow without bound on a
     /// machine that is spawning hundreds of processes a minute.
     public func prune(keeping alive: Set<pid_t>) {
+        lock.lock()
+        defer { lock.unlock() }
         observations = observations.filter { alive.contains($0.key) }
     }
 
-    public var trackedCount: Int { observations.count }
+    public var trackedCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return observations.count
+    }
 }
