@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-21
+
 ### Fixed
 
 - **Sampling no longer runs on the main actor.** Reading the process table, `proc_pidinfo`
@@ -15,8 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open menu. A poll that finds another one still sampling is skipped rather than queued, and
   a manual cleanup waits for a sample in flight instead of racing it. `IdleTracker` is now
   internally synchronised, since it is no longer confined to the main actor.
-
-### Fixed
 
 - **The denylist no longer fails open where it is blind.** Executable paths were resolved
   for the 20 largest offenders only, so a path-based deny entry could not match the rest,
@@ -298,7 +298,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--probe` mode printing one live reading for cross-checking against
   `ps -Ao stat | grep -c '^Z'`.
 
-[Unreleased]: https://github.com/trsdn/OpenZombr/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/trsdn/OpenZombr/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/trsdn/OpenZombr/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/trsdn/OpenZombr/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/trsdn/OpenZombr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/trsdn/OpenZombr/releases/tag/v0.1.0
