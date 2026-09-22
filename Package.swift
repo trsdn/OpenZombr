@@ -29,19 +29,19 @@ let package = Package(
             ],
             path: "Sources/OpenZombr",
             exclude: ["Info.plist"],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
             name: "OpenZombrApp",
             dependencies: ["OpenZombrKit"],
             path: "Sources/OpenZombrApp",
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "OpenZombrTests",
             dependencies: ["OpenZombrKit"],
             path: "Tests/OpenZombrTests",
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
 )

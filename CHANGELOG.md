@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **All targets build in the Swift 6 language mode.** Two pre-Sendable Foundation types
+  that are documented thread-safe when used the way this codebase uses them — a
+  `FileManager` instance never mutated after creation, a date formatter configured once and
+  only read from — are marked `nonisolated(unsafe)` at their one call site each. No
+  concurrency behaviour changes; the compiler now checks the claims the code already made
+  in comments, such as `IdleTracker`'s internal locking.
+
 ### Documentation
 
 - **Audit finding 5 is confirmed intentional, not a gap.** A parent whose session children
