@@ -11,7 +11,25 @@ public struct MenuBarContentView: View {
         self.updates = updates
     }
 
+    /// The application's name, with the version when the app is bundled. `swift run` has no
+    /// Info.plist, so the version is simply left out there.
+    static func title(version: String?) -> String {
+        guard let version, !version.isEmpty else { return "OpenZombr" }
+        return "OpenZombr \(version)"
+    }
+
+    private var titleText: String {
+        Self.title(
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+                as? String)
+    }
+
     public var body: some View {
+        // The name comes first, above everything else, so the menu says whose it is before
+        // it says anything about the machine.
+        Text(titleText)
+        Divider()
+
         // A stale reading is announced before the numbers, not after them. The failure
         // mode this app must not have is looking healthy while blind: its sister app was
         // dead for a day and a half without anyone noticing.
