@@ -112,6 +112,18 @@ public struct ZombieParent: Sendable, Equatable, Hashable, Identifiable {
     /// This is a degraded state, not a verdict: the parent is protected either way, but
     /// "protected because both signals say the session is alive" and "protected because
     /// the app cannot see" are very different situations and are reported separately.
+    ///
+    /// Note that the CPU signal can be *permanently* unreadable for a parent whose session
+    /// children are not one persistent process but a rotating cast of short-lived helpers —
+    /// `sh -c …`, `curl`, or similar plumbing the leak spawns itself, each with a different
+    /// name and each gone before the next poll. `IdleTracker` can only report an idle
+    /// duration once it has seen the same pid twice, so such a parent never accumulates
+    /// one. That is deliberate, not a gap to close: AGENTS.md's "a parent with unreadable
+    /// idle signals is never overridden" is one of the boundaries the emergency override may
+    /// not cross, and every other boundary next to it was set from live measurement, not
+    /// reasoning about a hypothetical. Treating a churning cast of children as evidence of
+    /// anything would need the same kind of measurement, and none exists for this case.
+    /// `TransientSessionChildTests` pins the current behaviour down.
     public var hasUnreadableSessionSignal: Bool {
         hasActiveSession && (sessionIdleSeconds == nil || sessionLogAgeSeconds == nil)
     }

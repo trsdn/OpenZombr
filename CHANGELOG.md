@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Audit finding 5 is confirmed intentional, not a gap.** A parent whose session children
+  are a rotating cast of short-lived helpers (`sh -c …`, `curl`, leak plumbing) rather than
+  one persistent process can never produce a readable CPU idle signal, because
+  `IdleTracker` needs to see the same pid twice. That keeps the parent's session signal
+  permanently unreadable, which AGENTS.md already requires the emergency override to
+  respect. `TransientSessionChildTests` pins this down; no behavior changed.
+
 ## [0.4.1] - 2026-09-22
 
 ### Added
