@@ -26,7 +26,9 @@ final class SessionLogContentTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private static let stamp: ISO8601DateFormatter = {
+    // Configured once and never mutated afterward, only read via `.string(from:)`, which
+    // Apple documents as safe to call concurrently.
+    private nonisolated(unsafe) static let stamp: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         formatter.timeZone = TimeZone(secondsFromGMT: 0)

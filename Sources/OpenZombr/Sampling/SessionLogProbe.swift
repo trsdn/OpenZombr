@@ -34,7 +34,11 @@ public protocol SessionLogProbing: Sendable {
 /// how long ago the session last wrote something that is *not* a known heartbeat.
 public struct SessionLogProbe: SessionLogProbing {
     private let enumerator: ProcessEnumerating
-    private let fileManager: FileManager
+    // `FileManager` predates Sendable and is not yet annotated, but Apple documents it as
+    // safe to use concurrently from multiple threads: "the singleton FileManager instance
+    // ... is safe to call from multiple threads", and the same holds for an instance created
+    // with `init()`, which is all this struct ever stores.
+    private nonisolated(unsafe) let fileManager: FileManager
     private let reader: SessionLogReader
 
     /// Files whose names contain any of these are ignored entirely.
